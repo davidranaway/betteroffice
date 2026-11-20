@@ -1,6 +1,6 @@
 # xelper pptx-react prerelease
 
-This channel builds `@davidranaway/betteroffice-pptx-react@0.5.1-xelper.1`
+This channel builds `@davidranaway/betteroffice-pptx-react@0.5.1-xelper.2`
 from the official `@betteroffice/pptx-react@0.5.1` tag plus the single ordered
 pptx-react source backport recorded in `channel.json`. That backport carries
 the reviewed PR #2698 behavior in full: plain Up/Down thumbnail navigation and
@@ -33,20 +33,15 @@ and npm pack inspection; then writes the ignored tarball and its provenance
 record under `artifacts/`. It refuses unexpected inputs and verifies that the
 invoking checkout was not mutated.
 
-## First publish, then Trusted Publishing
+## Trusted Publishing
 
-The npm package name does not exist yet. The workflow intentionally refuses to
-create it. After reviewing the generated tarball, the owner performs the first
-publish interactively:
+The package was bootstrapped interactively with the immutable
+`0.5.1-xelper.1` tarball. All subsequent versions publish from
+`.github/workflows/publish-xelper-pptx-react.yml` through npm Trusted
+Publishing. The workflow refuses long-lived npm tokens and validates the exact
+release tag before building.
 
-```bash
-npm login
-npm publish xelper-prereleases/pptx-react/artifacts/davidranaway-betteroffice-pptx-react-0.5.1-xelper.1.tgz \
-  --access public --tag xelper
-```
-
-Then configure npm Trusted Publishing for the fork repository and
-`.github/workflows/publish-xelper-pptx-react.yml`. Subsequent reviewed versions
-are published with provenance and dist-tag `xelper` by pushing the exact tag
+Reviewed versions are published with provenance and dist-tag `xelper` by
+pushing the exact tag
 `@davidranaway/betteroffice-pptx-react@<version>`. Never reuse or move a
 published tag.
