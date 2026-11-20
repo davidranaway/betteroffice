@@ -2,7 +2,8 @@
   "schemaVersion": 1,
   "package": {
     "name": "@davidranaway/betteroffice-pptx-react",
-    "version": "0.5.1-xelper.3",
+    "version": "0.5.1-xelper.4",
+    "repository": "https://github.com/davidranaway/betteroffice.git",
     "distTag": "xelper"
   },
   "source": {

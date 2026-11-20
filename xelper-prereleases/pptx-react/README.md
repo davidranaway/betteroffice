@@ -1,6 +1,6 @@
 # xelper pptx-react prerelease
 
-This channel builds `@davidranaway/betteroffice-pptx-react@0.5.1-xelper.3`
+This channel builds `@davidranaway/betteroffice-pptx-react@0.5.1-xelper.4`
 from the official `@betteroffice/pptx-react@0.5.1` tag plus the single ordered
 pptx-react source backport recorded in `channel.json`. That backport carries
 the reviewed PR #2698 behavior in full: plain Up/Down thumbnail navigation and
@@ -41,9 +41,13 @@ The package was bootstrapped interactively with the immutable
 Publishing. The workflow refuses long-lived npm tokens and validates the exact
 release tag before building.
 
-The immutable `0.5.1-xelper.2` tag did not publish because its workflow loaded
-the repository-wide test preload; `.3` keeps the same reviewed package inputs
-and runs the isolated packaging contract outside that preload.
+The immutable `.2` tag did not publish because its workflow loaded the
+repository-wide test preload. The immutable `.3` tag passed every package check
+but did not publish because its staged repository URL still named upstream,
+which did not match the fork’s OIDC provenance. `.4` keeps the same reviewed
+package inputs, isolates the contract test, and names the publishing fork in
+the staged npm manifest while preserving upstream source details in
+`XELPER-PROVENANCE.json`.
 
 Reviewed versions are published with provenance and dist-tag `xelper` by
 pushing the exact tag
