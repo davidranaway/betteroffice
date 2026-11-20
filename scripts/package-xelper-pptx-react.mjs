@@ -78,7 +78,8 @@ export function loadChannel() {
   const expected = {
     schemaVersion: 1,
     name: '@davidranaway/betteroffice-pptx-react',
-    version: '0.5.1-xelper.3',
+    version: '0.5.1-xelper.4',
+    repository: 'https://github.com/davidranaway/betteroffice.git',
     distTag: 'xelper',
     tag: '@betteroffice/pptx-react@0.5.1',
     commit: '4e982c3aea0065578604c3fe7727938533888f66',
@@ -94,6 +95,7 @@ export function loadChannel() {
   if (channel.schemaVersion !== expected.schemaVersion ||
       channel.package?.name !== expected.name ||
       channel.package?.version !== expected.version ||
+      channel.package?.repository !== expected.repository ||
       channel.package?.distTag !== expected.distTag ||
       channel.source?.tag !== expected.tag ||
       channel.source?.commit !== expected.commit ||
@@ -177,6 +179,10 @@ export function stagePackage({ channel, sourcePackage = sourcePackageDirectory, 
   const stagedManifest = structuredClone(sourceManifest);
   stagedManifest.name = channel.package.name;
   stagedManifest.version = channel.package.version;
+  stagedManifest.repository = {
+    ...stagedManifest.repository,
+    url: channel.package.repository,
+  };
   stagedManifest.dependencies = structuredClone(channel.dependencies);
   stagedManifest.files = ['dist', 'XELPER-PROVENANCE.json'];
   writeFileSync(join(stage, 'package.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`);

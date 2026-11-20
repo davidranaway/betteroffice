@@ -53,14 +53,14 @@ test('stages the reviewed personal-scope package without mutating official sourc
 
   expect(result.manifest).toMatchObject({
     name: '@davidranaway/betteroffice-pptx-react',
-    version: '0.5.1-xelper.3',
+    version: '0.5.1-xelper.4',
     dependencies: {
       '@betteroffice/pptx': '0.5.1',
       '@betteroffice/pptx-i18n': '0.5.1',
     },
     license: 'Apache-2.0',
     repository: {
-      url: 'https://github.com/openooxml/betteroffice.git',
+      url: 'https://github.com/davidranaway/betteroffice.git',
       directory: 'packages/pptx-react',
     },
   });
