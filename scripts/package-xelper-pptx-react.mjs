@@ -78,7 +78,7 @@ export function loadChannel() {
   const expected = {
     schemaVersion: 1,
     name: '@davidranaway/betteroffice-pptx-react',
-    version: '0.5.1-xelper.2',
+    version: '0.5.1-xelper.3',
     distTag: 'xelper',
     tag: '@betteroffice/pptx-react@0.5.1',
     commit: '4e982c3aea0065578604c3fe7727938533888f66',

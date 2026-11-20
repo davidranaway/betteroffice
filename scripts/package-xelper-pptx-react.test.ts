@@ -53,7 +53,7 @@ test('stages the reviewed personal-scope package without mutating official sourc
 
   expect(result.manifest).toMatchObject({
     name: '@davidranaway/betteroffice-pptx-react',
-    version: '0.5.1-xelper.2',
+    version: '0.5.1-xelper.3',
     dependencies: {
       '@betteroffice/pptx': '0.5.1',
       '@betteroffice/pptx-i18n': '0.5.1',

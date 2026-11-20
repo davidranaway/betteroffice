@@ -51,9 +51,9 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Test packaging contract
-        env:
-          BUN_CONFIG_PRELOAD: ""
-        run: bun test scripts/package-xelper-pptx-react.test.ts
+        run: |
+          cd "$RUNNER_TEMP"
+          bun test "$GITHUB_WORKSPACE/scripts/package-xelper-pptx-react.test.ts"
 
       - name: Build, test, audit, and inspect package
         run: bun scripts/package-xelper-pptx-react.mjs
