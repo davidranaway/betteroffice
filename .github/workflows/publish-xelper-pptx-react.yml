@@ -1,0 +1,83 @@
+name: Publish xelper pptx-react prerelease
+
+on:
+  push:
+    tags:
+      - '@davidranaway/betteroffice-pptx-react@*'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  publish:
+    name: Publish xelper pptx-react
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.3"
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: ./.github/actions/wasm-toolchain
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+
+      - name: Validate tag and version
+        run: bun scripts/package-xelper-pptx-react.mjs --validate-tag "$GITHUB_REF_NAME"
+
+      - name: Install locked tooling dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test packaging contract
+        env:
+          BUN_CONFIG_PRELOAD: ""
+        run: bun test scripts/package-xelper-pptx-react.test.ts
+
+      - name: Build, test, audit, and inspect package
+        run: bun scripts/package-xelper-pptx-react.mjs
+
+      - name: Refuse an npm token
+        env:
+          TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "::error::NPM_TOKEN is set. This workflow publishes through Trusted Publishing only."
+            exit 1
+          fi
+
+      - name: Require the initial manual publish
+        run: |
+          if ! npm view '@davidranaway/betteroffice-pptx-react' version >/dev/null 2>&1; then
+            echo "::error::The package does not exist on npm. Complete the documented first manual publish, then configure Trusted Publishing before pushing a release tag."
+            exit 1
+          fi
+
+      - name: Publish with provenance
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: |
+          tarball=$(find xelper-prereleases/pptx-react/artifacts -maxdepth 1 -type f -name '*.tgz' -print)
+          test "$(printf '%s\n' "$tarball" | sed '/^$/d' | wc -l | tr -d ' ')" = 1
+          npm publish "$tarball" --access public --tag xelper
