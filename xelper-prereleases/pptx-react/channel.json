@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "package": {
+    "name": "@davidranaway/betteroffice-pptx-react",
+    "version": "0.5.1-xelper.1",
+    "distTag": "xelper"
+  },
+  "source": {
+    "tag": "@betteroffice/pptx-react@0.5.1",
+    "commit": "4e982c3aea0065578604c3fe7727938533888f66"
+  },
+  "buildEnvironment": {
+    "patches": [
+      {
+        "advisory": "GHSA-3f7j-7jwc-fxfj",
+        "package": "systeminformation",
+        "version": "5.33.16",
+        "license": "MIT",
+        "patch": "patches/build/0001-pin-systeminformation-5.33.16.patch",
+        "sha256": "488b47968a8da5dd7601396a01b89a115e01e52e7d8d574b2498fc42a2dab13a",
+        "paths": [
+          "bun.lock",
+          "package.json"
+        ],
+        "prePatchSha256": {
+          "bun.lock": "bb6f227b1b7678254e3a36481f4e4a5ebf83eed66c1e11a7693d3498d4eb87e5",
+          "package.json": "e2b1c56766587281c359ff3069fbb1d7ee2cc634824d3ad8494c539577fe8181"
+        },
+        "postPatchSha256": {
+          "bun.lock": "60850759e3a8a655999e5591bb3b0475ad5ee6ea09678435d96123bb2a23629d",
+          "package.json": "d1c0522244fe34fb8f71980e5742ba2c67b6ccf13eccc2e593697e0c665b4138"
+        }
+      }
+    ]
+  },
+  "dependencies": {
+    "@betteroffice/pptx": "0.5.1",
+    "@betteroffice/pptx-i18n": "0.5.1"
+  },
+  "backports": [
+    {
+      "upstreamPullRequest": 2698,
+      "behavior": "Full slide-strip keyboard navigation and focus retention",
+      "reviewedCommits": [
+        "541770e783cd972527b0f7e4592965dabcb9229e",
+        "aeb5b2c6591efa80906d84d55ea8e14aaf344a4f"
+      ],
+      "patch": "patches/0001-keep-focus-in-slide-strip.patch",
+      "sha256": "77d8b91d45157c311b46f3704106cc89520daf667f118dc7def3dc17c8051664",
+      "paths": [
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx",
+        "packages/pptx-react/src/worker/PeerlessSlideStrip.tsx"
+      ],
+      "postPatchSha256": {
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx": "9d0e631c38fd97679c25942355aedeacc5cd28b7ef68feeb1e32147145bcc32b",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx": "d8ee182c4ef824f83ce479e62ad1cb0c442fb0d38c9474aa237b6bb07a764428",
+        "packages/pptx-react/src/worker/PeerlessSlideStrip.tsx": "cda730708e9e9327442f4b1a00bc9a9aa34e0b3278e4fc518a8296c23e96b445"
+      }
+    }
+  ]
+}

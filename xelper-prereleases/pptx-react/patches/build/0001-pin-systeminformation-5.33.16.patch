@@ -1,0 +1,13 @@
+--- a/package.json
++++ b/package.json
+@@ -29 +29,2 @@
+-    "body-parser": "^2.4.0"
++    "body-parser": "^2.4.0",
++    "systeminformation": "5.33.16"
+--- a/bun.lock
++++ b/bun.lock
+@@ -476,0 +477 @@
++    "systeminformation": "5.33.16",
+@@ -2567 +2568 @@
+-    "systeminformation": ["systeminformation@5.31.16", "", { "os": "!aix", "bin": { "systeminformation": "lib/cli.js" } }, "sha512-37NsFaeaqwYxanLgdJAGWj8OXIRgvSBsDXGhlC0uUoHyl9nf4HrNsZjqtQ9Gc99bj9FQpffzYccPVuQ6gpjfqg=="],
++    "systeminformation": ["systeminformation@5.33.16", "", { "os": "!aix", "bin": { "systeminformation": "lib/cli.js" } }, "sha512-R+Lh69IJXfJj6bfyH1In5cIR9FTr4hBS39YvlZHZjsK1p9cuELPq7hplZZIb56ZESMMb+DzdKqqE6Iomi01Mvg=="],
