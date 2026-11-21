@@ -1,0 +1,1183 @@
+diff --git a/packages/pptx-react/src/interactions.ts b/packages/pptx-react/src/interactions.ts
+index 9fd3b66f4cee257e3c8855fa7a6138a8b4f3ac69..fc9d920cbfb4e2e67d11f96bfc78ce1b5e81ccec 100644
+--- a/packages/pptx-react/src/interactions.ts
++++ b/packages/pptx-react/src/interactions.ts
+@@ -7,6 +7,7 @@ import type {
+   SlideSnapshot,
+   TextBoxPrimitive,
+ } from '@betteroffice/pptx';
++import { resizedShapeRect } from '../../../shared/office-session/shapeResize';
+ 
+ export interface SlidePoint {
+   x: number;
+@@ -385,36 +386,7 @@ export function resizedBounds(
+   minimum: number,
+   aspectRatioLocked = false
+ ): FrameBounds {
+-  if (aspectRatioLocked && handle.length === 2 && bounds.width > 0 && bounds.height > 0) {
+-    const dx = handle.includes('w') ? -delta.x : delta.x;
+-    const dy = handle.startsWith('n') ? -delta.y : delta.y;
+-    const scale = Math.max(1 + (dx * bounds.width + dy * bounds.height) /
+-      (bounds.width ** 2 + bounds.height ** 2),
+-      minimum / bounds.width, minimum / bounds.height);
+-    const width = Math.round(bounds.width * scale);
+-    const height = Math.round(bounds.height * scale);
+-    return {
+-      x: handle.includes('w') ? bounds.x + bounds.width - width : bounds.x,
+-      y: handle.startsWith('n') ? bounds.y + bounds.height - height : bounds.y,
+-      width, height,
+-    };
+-  }
+-  let { x, y, width, height } = bounds;
+-  if (handle.includes('w')) {
+-    const dx = Math.min(delta.x, width - minimum);
+-    x += dx;
+-    width -= dx;
+-  } else if (handle.includes('e')) {
+-    width = Math.max(minimum, width + delta.x);
+-  }
+-  if (handle.startsWith('n')) {
+-    const dy = Math.min(delta.y, height - minimum);
+-    y += dy;
+-    height -= dy;
+-  } else if (handle.startsWith('s')) {
+-    height = Math.max(minimum, height + delta.y);
+-  }
+-  return { x, y, width, height };
++  return resizedShapeRect(bounds, handle, delta, minimum, aspectRatioLocked);
+ }
+ 
+ /** The delta a resize commits. The release event's own position wins, so a
+diff --git a/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx b/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
+index e89b1c2091f9cbd6025d0a566fa590e5e4bab17f..b91265e199b042d9a9fd6ec4552e7ef543f40bba 100644
+--- a/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
++++ b/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
+@@ -41,7 +41,7 @@ import {
+ import { usePeerlessPresentation, type PeerlessPresentation } from './usePeerlessPresentation';
+ import { createPeerlessEditorApi, type PptxAsyncEditorApi } from './createPeerlessEditorApi';
+ import { usePeerlessTextSelection } from './usePeerlessTextSelection';
+-import { PeerlessShapeOverlay } from './PeerlessShapeOverlay';
++import { PeerlessResizeHandles, PeerlessShapeOverlay } from './PeerlessShapeOverlay';
+ import { usePeerlessShapeGestures, type PeerlessShapePreviewStore } from './usePeerlessShapeGestures';
+ 
+ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPresentation | null,
+@@ -103,10 +103,16 @@ function Overlays({ run, commands, inputRef, preview, insertion, onError }: { ru
+   const { view, fit } = snapshot;
+   const confirmed = view.confirmed!;
+   const selected = view.selection;
+-  const rectangles = selected && selected.kind !== 'object' && selected.slideId === confirmed.frame.slideId
+-    ? geometry!.hits.filter(({ primitive }) => primitive.shapeId === selected.shapeId)
+-      .map(({ primitive, transforms }) => transformedRect(transforms,
+-        { x: primitive.x, y: primitive.y, width: primitive.w, height: primitive.h })) : [];
++  const editedEntries = selected && selected.kind !== 'object' && selected.slideId === confirmed.frame.slideId
++    ? geometry!.hits.filter(({ primitive }) => primitive.shapeId === selected.shapeId) : [];
++  const rectangles = editedEntries.map(({ primitive, transforms }) => transformedRect(transforms,
++    { x: primitive.x, y: primitive.y, width: primitive.w, height: primitive.h }));
++  const canResizeEdited = selected?.kind !== 'object' && selected?.canResize === true && editedEntries.some(({ transforms }) =>
++    transforms.length === 1 && transforms[0]?.shapeId === selected?.shapeId) &&
++    editedEntries.every(({ transforms }) => transforms.length === 1 && transforms.every(({ transform }) => {
++      const rotation = ((transform?.rotationDeg ?? 0) % 360 + 360) % 360;
++      return rotation === 0 && !transform?.flipH && !transform?.flipV;
++    }));
+   const x = Math.min(...rectangles.map((rect) => rect.x));
+   const y = Math.min(...rectangles.map((rect) => rect.y));
+   const edited = insertion ?? (rectangles.length ? { x, y,
+@@ -122,6 +128,9 @@ function Overlays({ run, commands, inputRef, preview, insertion, onError }: { ru
+     </div>
+     {!insertion && view.selection?.kind === 'object' && <PeerlessShapeOverlay selection={view.selection} preview={preview}
+       scale={fit.scale} readOnly={view.editState.readOnly} />}
++    {!insertion && edited && selected && selected.kind !== 'object' &&
++      <PeerlessResizeHandles bounds={edited} scale={fit.scale}
++        readOnly={view.editState.readOnly} canResize={canResizeEdited} />}
+     {edited && <span data-testid="pptx-text-edit-outline" aria-hidden="true" style={{
+       position: 'absolute', zIndex: 3, pointerEvents: 'none', border: '2px dashed #6b7280',
+       boxSizing: 'border-box', boxShadow: '0 0 0 1px rgba(255, 255, 255, 0.9)',
+diff --git a/packages/pptx-react/src/worker/PeerlessShapeOverlay.tsx b/packages/pptx-react/src/worker/PeerlessShapeOverlay.tsx
+index fee72c3fa3fe160c794f71d6de7ba07b49d88448..29481393067732667f70a22591fde056de77398c 100644
+--- a/packages/pptx-react/src/worker/PeerlessShapeOverlay.tsx
++++ b/packages/pptx-react/src/worker/PeerlessShapeOverlay.tsx
+@@ -4,10 +4,28 @@ import { handleAnchor, RESIZE_HANDLES, resizeCursor } from '../interactions';
+ import type { PeerlessShapePreviewStore } from './usePeerlessShapeGestures';
+ import { useTranslation } from '../i18n';
+ 
++export function PeerlessResizeHandles({ bounds, scale, readOnly, canResize }: {
++  bounds: { x: number; y: number; width: number; height: number };
++  scale: number;
++  readOnly: boolean;
++  canResize: boolean;
++}) {
++  const { t } = useTranslation();
++  if (readOnly || !canResize) return null;
++  return RESIZE_HANDLES.map((handle) => {
++    const point = handleAnchor(bounds, handle);
++    return <span key={handle} data-testid={`pptx-resize-${handle}`} data-pptx-resize={handle}
++      role="img" aria-label={t(`objects.resize.${handle}`)}
++      style={{ position: 'absolute', zIndex: 4, pointerEvents: 'auto',
++        left: point.x * scale - 4, top: point.y * scale - 4,
++        width: 8, height: 8, borderRadius: '50%', border: '1px solid #2563eb', background: '#fff',
++        boxSizing: 'border-box', cursor: resizeCursor(handle), touchAction: 'none' }} />;
++  });
++}
++
+ export function PeerlessShapeOverlay({ selection, preview: previews, scale, readOnly }: {
+   selection: PresentationCommandObjectSelection; preview: PeerlessShapePreviewStore; scale: number; readOnly: boolean;
+ }) {
+-  const { t } = useTranslation();
+   const preview = useSyncExternalStore(previews.subscribe, previews.getSnapshot, previews.getSnapshot);
+   const original = selection.bounds;
+   const bounds = preview?.token === selection.token ? preview.bounds : original;
+@@ -16,13 +34,6 @@ export function PeerlessShapeOverlay({ selection, preview: previews, scale, read
+       left: original.x * scale, top: original.y * scale, width: original.width * scale, height: original.height * scale,
+       border: '2px solid #2563eb', boxSizing: 'border-box', transformOrigin: '0 0',
+       transform: `translate(${(bounds.x - original.x) * scale}px, ${(bounds.y - original.y) * scale}px) scale(${original.width ? bounds.width / original.width : 1}, ${original.height ? bounds.height / original.height : 1})` }} />
+-    {!readOnly && selection.canResize && RESIZE_HANDLES.map((handle) => {
+-      const point = handleAnchor(bounds, handle);
+-      return <span key={handle} data-testid={`pptx-resize-${handle}`} data-pptx-resize={handle}
+-        role="img" aria-label={t(`objects.resize.${handle}`)}
+-        style={{ position: 'absolute', pointerEvents: 'auto', left: point.x * scale - 4, top: point.y * scale - 4,
+-          width: 8, height: 8, borderRadius: '50%', border: '1px solid #2563eb', background: '#fff',
+-          boxSizing: 'border-box', cursor: resizeCursor(handle), touchAction: 'none' }} />;
+-    })}
++    <PeerlessResizeHandles bounds={bounds} scale={scale} readOnly={readOnly} canResize={selection.canResize} />
+   </>;
+ }
+diff --git a/packages/pptx-react/src/worker/peerlessClipboard.ts b/packages/pptx-react/src/worker/peerlessClipboard.ts
+index 597be7263f6128eeb748f6cee3f6b0a796949167..f4a027cb4409c7da5ebf1f0ae524266f32eca984 100644
+--- a/packages/pptx-react/src/worker/peerlessClipboard.ts
++++ b/packages/pptx-react/src/worker/peerlessClipboard.ts
+@@ -1,7 +1,21 @@
+ import { PptxCommandAdmissionError } from '../commands/createPptxCommandStore';
++import type {
++  PresentationCommandSelected,
++  PresentationCommandSelection,
++} from '@betteroffice/pptx/worker';
+ import { peerlessKnownState } from './peerlessViewStore';
+ import type { PeerlessPresentation } from './usePeerlessPresentation';
+ 
++function sameSelection(
++  left: PresentationCommandSelection,
++  right: PresentationCommandSelected | null
++): boolean {
++  return right?.kind !== 'object' && left.slideId === right?.slideId &&
++    left.shapeId === right.shapeId && left.storyId === right.storyId &&
++    left.anchor === right.anchor && left.focus === right.focus &&
++    left.affinity === right.affinity && left.kind === right.kind;
++}
++
+ export async function peerlessClipboard(run: PeerlessPresentation, cut: boolean): Promise<void> {
+   run.require();
+   await run.store.fence();
+@@ -9,11 +23,10 @@ export async function peerlessClipboard(run: PeerlessPresentation, cut: boolean)
+   const view = run.store.getSnapshot();
+   const selection = view.selection;
+   if (!selection || selection.kind === 'object' || selection.anchor === selection.focus || view.composition || cut && view.editState.readOnly) return;
+-  const captured = JSON.stringify(selection);
+   const result = (await run.client.read({ slideIds: [selection.slideId] })).result;
+   run.require();
+   if (!result.ok) throw new Error(result.failure.message);
+-  if (captured !== JSON.stringify(run.store.getSnapshot().selection)) throw new PptxCommandAdmissionError('target-changed');
++  if (!sameSelection(selection, run.store.getSnapshot().selection)) throw new PptxCommandAdmissionError('target-changed');
+   const story = result.stories.find((story) => story.storyId === selection.storyId && story.shapeId === selection.shapeId);
+   if (!story) throw new PptxCommandAdmissionError('target-changed');
+   await navigator.clipboard.writeText(story.text.slice(Math.min(selection.anchor, selection.focus), Math.max(selection.anchor, selection.focus)));
+@@ -22,7 +35,7 @@ export async function peerlessClipboard(run: PeerlessPresentation, cut: boolean)
+   await run.store.fence();
+   run.require();
+   if (run.store.getSnapshot().composition || !run.inputEnabled || !peerlessKnownState(run.store) || result.version !== run.client.state.version ||
+-    captured !== JSON.stringify(run.store.getSnapshot().selection)) throw new PptxCommandAdmissionError('target-changed');
++    !sameSelection(selection, run.store.getSnapshot().selection)) throw new PptxCommandAdmissionError('target-changed');
+   await run.store.dispatch({ kind: 'replaceText', payload: { at: { source: 'confirmed', selection },
+     text: '', inputTime: performance.now(), undoGroup: 'cut' } });
+ }
+diff --git a/packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx b/packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx
+index 3328543b19120b2ca57089a11df6108e9dd93adf..eb52f54541512f21c69970be3cafc3cb30f229ee 100644
+--- a/packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx
++++ b/packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx
+@@ -2,15 +2,15 @@ import { expect, spyOn, test } from 'bun:test';
+ import JSZip from 'jszip';
+ import { decodeCommandDisplayList, presentationSharedInputs } from '@betteroffice/pptx/worker';
+ import type { ShapeRect, TextBoxPrimitive } from '@betteroffice/pptx';
+-import { open, replyControl } from './peerlessTestHarness';
++import { deck, open, replyControl, story, type } from './peerlessTestHarness';
+ import { peerlessPainterFactories } from './usePeerlessPresentation';
+ 
+ const { act, fireEvent, waitFor } = await import('@testing-library/react');
+ 
+-function outline(view: Awaited<ReturnType<typeof open>>['view']) {
++function outline(view: Awaited<ReturnType<typeof open>>['view'], resizeHandles = true) {
+   const elements = view.getAllByTestId('pptx-text-edit-outline');
+   expect(elements).toHaveLength(1);
+-  expect(view.queryAllByTestId(/pptx-resize-/)).toHaveLength(0);
++  expect(view.queryAllByTestId(/pptx-resize-/)).toHaveLength(resizeHandles ? 8 : 0);
+   const element = elements[0]!;
+   expect(element.style.border).toBe('2px dashed #6b7280');
+   expect(element.style.boxShadow).toBe('0 0 0 1px rgba(255, 255, 255, 0.9)');
+@@ -32,6 +32,140 @@ async function editExisting(h: Awaited<ReturnType<typeof open>>) {
+   await waitFor(() => outline(h.view));
+ }
+ 
++async function groupedDeck(bytes: Uint8Array) {
++  const zip = await JSZip.loadAsync(bytes);
++  const path = 'ppt/slides/slide1.xml';
++  const xml = await zip.file(path)!.async('string');
++  const shape = xml.match(/<p:sp>.*?<\/p:sp>/)![0];
++  const child = shape.replace('id="2" name="Text"', 'id="4" name="Child"');
++  const group = `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="3" name="Group"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="9144000" cy="5143500"/><a:chOff x="0" y="0"/><a:chExt cx="9144000" cy="5143500"/></a:xfrm></p:grpSpPr>${child}</p:grpSp>`;
++  zip.file(path, xml.replace(shape, group));
++  return zip.generateAsync({ type: 'uint8array' });
++}
++
++test('resize released before object selection commits once in order', async () => {
++  const h = await open();
++  await editExisting(h);
++  const edge = h.point(h.box.x + h.box.w, h.box.y + h.box.h / 2);
++  const since = h.commands.length;
++  replyControl.hold();
++  try {
++    act(() => {
++      fireEvent.pointerDown(h.view.getByTestId('pptx-resize-e'), edge);
++      fireEvent.pointerMove(h.stage, { ...edge, clientX: edge.clientX + 10, buttons: 1 });
++      fireEvent.pointerUp(h.stage, { ...edge, clientX: edge.clientX + 30 });
++    });
++    await waitFor(() => expect(replyControl.count()).toBeGreaterThan(0));
++    expect(h.commands.slice(since).map((command) => command.kind)).toEqual(['selectObject']);
++    await act(async () => { replyControl.releaseNext(); });
++    await waitFor(() => expect(h.commands.slice(since).map((command) => command.kind))
++      .toEqual(['selectObject', 'setShapeRect']));
++    expect(h.commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1);
++  } finally {
++    await act(async () => { replyControl.release(); });
++  }
++  await h.client.flush();
++  expect(h.commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1);
++});
++
++test('pending released resize remains cancellable before object selection replies', async () => {
++  const h = await open();
++  await editExisting(h);
++  const edge = h.point(h.box.x + h.box.w, h.box.y + h.box.h / 2);
++  replyControl.hold();
++  try {
++    act(() => {
++      fireEvent.pointerDown(h.view.getByTestId('pptx-resize-e'), edge);
++      fireEvent.pointerMove(h.stage, { ...edge, clientX: edge.clientX + 10, buttons: 1 });
++      fireEvent.pointerUp(h.stage, { ...edge, clientX: edge.clientX + 30 });
++      fireEvent.keyDown(h.stage, { key: 'Escape' });
++    });
++    await waitFor(() => expect(replyControl.count()).toBeGreaterThan(0));
++  } finally {
++    await act(async () => { replyControl.release(); });
++  }
++  await h.client.flush();
++  expect(h.commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(0);
++});
++
++test('text input after cancelling a released resize survives the pending selection', async () => {
++  const h = await open();
++  await editExisting(h);
++  const line = h.box.lines[0]!;
++  const textAt = h.point(line.caretStops[2]!.x, line.y + line.height / 2);
++  const edge = h.point(h.box.x + h.box.w, h.box.y + h.box.h / 2);
++  const since = h.commands.length;
++  replyControl.hold();
++  try {
++    act(() => {
++      fireEvent.pointerDown(h.view.getByTestId('pptx-resize-e'), edge);
++      fireEvent.pointerMove(h.stage, { ...edge, clientX: edge.clientX + 10, buttons: 1 });
++      fireEvent.pointerUp(h.stage, { ...edge, clientX: edge.clientX + 30 });
++      fireEvent.keyDown(h.stage, { key: 'Escape' });
++      fireEvent.pointerDown(h.canvas, textAt);
++      fireEvent.pointerUp(h.stage, textAt);
++      type(h.view.getByRole('textbox', { name: 'Slide text' }), '!');
++    });
++    await waitFor(() => expect(replyControl.count()).toBeGreaterThan(0));
++    expect(h.commands.slice(since).map((command) => command.kind))
++      .toEqual(['selectObject', 'selectAtPoint', 'insertText']);
++  } finally {
++    await act(async () => { replyControl.release(); });
++  }
++  await h.client.flush();
++  expect(h.commands.slice(since).map((command) => command.kind))
++    .toEqual(['selectObject', 'selectAtPoint', 'insertText']);
++  expect((await story(h.api)).text).toBe('al!pha beta\nx\nalpha beta');
++});
++
++test('a new shape gesture preserves an earlier released resize', async () => {
++  const h = await open();
++  await editExisting(h);
++  const edge = h.point(h.box.x + h.box.w, h.box.y + h.box.h / 2);
++  const since = h.commands.length;
++  const outcomes: Array<{ seq: number; status: string; committed?: boolean }> = [];
++  const unsubscribe = h.client.subscribe((ack) => { outcomes.push(...ack.outcomes); });
++  replyControl.hold();
++  try {
++    act(() => {
++      const handle = h.view.getByTestId('pptx-resize-e');
++      fireEvent.pointerDown(handle, edge);
++      fireEvent.pointerMove(h.stage, { ...edge, clientX: edge.clientX + 10, buttons: 1 });
++      fireEvent.pointerUp(h.stage, { ...edge, clientX: edge.clientX + 30 });
++      fireEvent.pointerDown(handle, edge);
++      fireEvent.pointerMove(h.stage, { ...edge, clientX: edge.clientX + 5, buttons: 1 });
++    });
++    await waitFor(() => expect(replyControl.count()).toBeGreaterThan(0));
++    await act(async () => { replyControl.releaseNext(); });
++    await waitFor(() => expect(h.commands.slice(since).some((command) => command.kind === 'setShapeRect')).toBe(true));
++  } finally {
++    await act(async () => { replyControl.release(); });
++    act(() => { fireEvent.pointerCancel(h.stage, edge); });
++    unsubscribe();
++  }
++  await h.client.flush();
++  const resize = h.commands.slice(since).filter((command) => command.kind === 'setShapeRect');
++  expect(resize).toHaveLength(1);
++  expect(outcomes.filter((outcome) => outcome.seq === resize[0]!.seq))
++    .toEqual([expect.objectContaining({ status: 'applied', committed: true })]);
++  const saved = (await h.client.read()).result;
++  expect(saved.ok).toBe(true);
++  if (!saved.ok) throw new Error(saved.failure.message);
++  expect(saved.slides[0]!.shapes[0]!.width)
++    .toBe(6000000 + Math.round(30 * 9144000 / h.list.width));
++});
++
++test('grouped child text hides resize handles while top-level text retains them', async () => {
++  const h = await open({ file: await groupedDeck(await deck()) });
++  const line = h.box.lines[0]!;
++  const at = h.point(line.caretStops[2]!.x, line.y + line.height / 2);
++  act(() => { fireEvent.pointerDown(h.canvas, at); fireEvent.pointerUp(h.stage, at); });
++  await waitFor(() => expect(h.client.state.selection).toMatchObject({
++    shapeId: h.box.shapeId, anchor: 2, focus: 2, canResize: false,
++  }));
++  await waitFor(() => outline(h.view, false));
++});
++
+ for (const [start, end] of [[[200.123, 150.456], [400.789, 220.123]],
+   [[900.123, 500.456], [980.789, 550.123]], [[200, 150], [201, 151]]] as const) {
+   test(`textbox outline survives pointerup at ${start.join(',')}`, async () => {
+@@ -56,7 +190,7 @@ for (const [start, end] of [[[200.123, 150.456], [400.789, 220.123]],
+       await waitFor(() => expect(replyControl.count()).toBeGreaterThan(0));
+       expect(h.view.queryByTestId('pptx-insertion-preview') === null).toBe(true);
+       expect(rect).toBeDefined();
+-      const echo = outline(h.view);
++      const echo = outline(h.view, false);
+       bounds(echo, { x: rect!.x * h.list.width / h.client.state.size.width,
+         y: rect!.y * h.list.height / h.client.state.size.height,
+         width: rect!.width * h.list.width / h.client.state.size.width,
+@@ -143,7 +277,7 @@ for (const change of ['failure', 'tool', 'slide', 'readOnly', 'replacement', 'Es
+         fireEvent.pointerUp(h.stage, h.point(400, 220));
+       });
+       await waitFor(() => expect(replyControl.count()).toBeGreaterThan(0));
+-      outline(h.view);
++      outline(h.view, false);
+       if (change === 'tool') await act(async () => { expect(await h.api.commands.execute('tool', { value: 'textBox' })).toMatchObject({ ok: true }); });
+       if (change === 'slide') fireEvent.click(h.view.getByRole('button', { name: '2' }));
+       if (change === 'readOnly') h.view.rerender(h.ui(true));
+@@ -182,7 +316,7 @@ test('existing rotated and flipped text uses the displayed shape bounds', async
+   const angle = Math.PI / 6;
+   const width = Math.abs(h.box.w * Math.cos(angle)) + Math.abs(h.box.h * Math.sin(angle));
+   const height = Math.abs(h.box.w * Math.sin(angle)) + Math.abs(h.box.h * Math.cos(angle));
+-  await waitFor(() => bounds(outline(h.view), { x: h.box.x + (h.box.w - width) / 2,
++  await waitFor(() => bounds(outline(h.view, false), { x: h.box.x + (h.box.w - width) / 2,
+     y: h.box.y + (h.box.h - height) / 2, width, height }, parseFloat(h.canvas.style.width) / h.list.width));
+ });
+ 
+@@ -217,7 +351,7 @@ test('textbox echo waits for display and yields to changed confirmed bounds', as
+     await waitFor(() => expect(h.client.state.selection).toMatchObject({ anchor: 0, focus: 0 }));
+     await waitFor(() => expect(paint).toBeDefined());
+     const scale = parseFloat(h.canvas.style.width) / h.list.width;
+-    bounds(outline(h.view), { x: 200, y: 150, width: 200, height: 70 }, scale);
++    bounds(outline(h.view, false), { x: 200, y: 150, width: 200, height: 70 }, scale);
+     holding = false;
+     await act(async () => { paint!(); });
+     await waitFor(() => bounds(outline(h.view), { x: 200, y: 150, width: 300, height: 70 }, scale));
+diff --git a/packages/pptx-react/src/worker/peerlessS6.test.tsx b/packages/pptx-react/src/worker/peerlessS6.test.tsx
+index 7d254f370c51efc7295f94c0749826c37f6f7e39..976d3b4165c186fc46754b9248b3db5e6632352b 100644
+--- a/packages/pptx-react/src/worker/peerlessS6.test.tsx
++++ b/packages/pptx-react/src/worker/peerlessS6.test.tsx
+@@ -26,6 +26,8 @@ let client: PresentationCommandClient;
+ let commands: PresentationCommandEnvelope[];
+ let owner: PptxWorkerSession | undefined;
+ let paintedThroughSeq = 0;
++let selectObjectReplyBarrier: Promise<void> | undefined;
++let releaseSelectObjectReply: (() => void) | undefined;
+ 
+ function bounded<T>(promise: Promise<T>): Promise<T> {
+   let timer: ReturnType<typeof setTimeout>;
+@@ -65,6 +67,8 @@ async function deck(small = false, table: boolean | 'empty' | 'mixed' | 'stacked
+ beforeEach(() => {
+   commands = [];
+   paintedThroughSeq = 0;
++  selectObjectReplyBarrier = undefined;
++  releaseSelectObjectReply = undefined;
+   const createPainter = peerlessPainterFactories.frame;
+   const painter = spyOn(peerlessPainterFactories, 'frame').mockImplementation((canvas, options) =>
+     createPainter(canvas, { ...options, onCommit(frame, view) {
+@@ -101,7 +105,13 @@ beforeEach(() => {
+     const command = registration.handlers.command;
+     const received = spyOn(registration.handlers, 'command').mockImplementation((context, envelope) => {
+       commands.push(envelope);
+-      return command(context, envelope);
++      const result = command(context, envelope);
++      return envelope.kind === 'selectObject' && selectObjectReplyBarrier
++        ? Promise.resolve(result).then(async (reply) => {
++          await selectObjectReplyBarrier;
++          return reply;
++        })
++        : result;
+     });
+     restorers.push(() => received.mockRestore());
+     createSessionHost<PresentationCommandMethods, PresentationCommandEvents, null>(pair.host, {
+@@ -150,7 +160,7 @@ async function open(small = false, table: boolean | 'empty' | 'mixed' | 'stacked
+   return { view, stage, canvas, box, point, select, list };
+ }
+ 
+-test('shape_border', async () => {
++test('text editing keeps resize handles active', async () => {
+   const { view, stage, canvas, box, point, select } = await open();
+   await select();
+   const line = box.lines[0]!;
+@@ -159,7 +169,17 @@ test('shape_border', async () => {
+     fireEvent.pointerUp(stage, point(stop.x, line.y + line.height / 2)); });
+   await waitFor(() => expect(client.state.selection).toMatchObject({ storyId: box.storyId, focus: 2 }));
+   expect(client.state.selection?.kind).not.toBe('object');
+-  await waitFor(() => expect(view.queryByTestId('pptx-resize-nw')).toBeNull());
++  const handle = await waitFor(() => view.getByTestId('pptx-resize-e'));
++  const edge = point(box.x + box.w, box.y + box.h / 2);
++  act(() => { fireEvent.pointerDown(handle, edge); });
++  await waitFor(() => expect(client.state.selection).toMatchObject({ kind: 'object', shapeId: box.shapeId }));
++  act(() => {
++    fireEvent.pointerMove(stage, { ...edge, clientX: edge.clientX + 10, buttons: 1 });
++    fireEvent.pointerUp(stage, { ...edge, clientX: edge.clientX + 30 });
++  });
++  await waitFor(() => expect(commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1));
++  await bounded(client.flush());
++  expect(client.state.selection).toMatchObject({ kind: 'object', shapeId: box.shapeId });
+ });
+ 
+ for (const kind of ['shape', 'text']) test(`empty_slide_space_clears_${kind}_selection`, async () => {
+@@ -427,6 +447,40 @@ test('released_shape_drag_precedes_immediate_text_click_and_typing', async () =>
+   expect(saved.slides[0]!.shapes[0]!.x).toBe(100000 + Math.round(30 * 9144000 / list.width));
+ });
+ 
++test('released text-edit resize precedes immediate text click and typing while selection is delayed', async () => {
++  const { stage, canvas, box, point, list, view } = await open();
++  const line = box.lines[0]!;
++  const stop = line.caretStops.find((stop) => stop.position === 2)!;
++  const textPoint = point(stop.x, line.y + line.height / 2);
++  act(() => { fireEvent.pointerDown(canvas, textPoint); fireEvent.pointerUp(stage, textPoint); });
++  await waitFor(() => expect(client.state.selection).toMatchObject({ storyId: box.storyId, focus: 2 }));
++  const handle = await waitFor(() => view.getByTestId('pptx-resize-e'));
++  selectObjectReplyBarrier = new Promise<void>((resolve) => { releaseSelectObjectReply = resolve; });
++  const since = commands.length;
++  const edge = point(box.x + box.w, box.y + box.h / 2);
++  const input = view.getByRole('textbox', { name: 'Slide text' });
++  act(() => {
++    fireEvent.pointerDown(handle, edge);
++    fireEvent.pointerMove(stage, { ...edge, clientX: edge.clientX + 10, buttons: 1 });
++    fireEvent.pointerUp(stage, { ...edge, clientX: edge.clientX + 30 });
++    fireEvent.pointerDown(canvas, textPoint);
++    fireEvent.pointerUp(stage, textPoint);
++    input.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '!',
++      bubbles: true, cancelable: true }));
++  });
++  await waitFor(() => expect(commands.slice(since).map((command) => command.kind)).toEqual(['selectObject']));
++  await act(async () => { releaseSelectObjectReply!(); });
++  await bounded(client.flush());
++  const ordered = commands.slice(since);
++  expect(ordered.map((command) => command.kind)).toEqual(['selectObject', 'setShapeRect', 'selectAtPoint', 'insertText']);
++  expect(ordered.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1);
++  const saved = (await client.read()).result;
++  expect(saved.ok).toBe(true);
++  if (!saved.ok) throw new Error(saved.failure.message);
++  expect(saved.stories[0]!.text).toBe('al!pha beta\nx\nalpha beta');
++  expect(saved.slides[0]!.shapes[0]!.width).toBe(6000000 + Math.round(30 * 9144000 / list.width));
++});
++
+ for (const cellIndex of [0, 1, 2, 3]) {
+   test(`table cell ${cellIndex} accepts a click at the caret and saves only its story`, async () => {
+     const { view, stage, canvas, point, list } = await open(false, true);
+diff --git a/packages/pptx-react/src/worker/peerlessViewStore.ts b/packages/pptx-react/src/worker/peerlessViewStore.ts
+index c078f25aa6f5f9c73e6bf1560373867ba8001cba..15429fc9f326e90a6a65f7462cdfdb9b98c64b19 100644
+--- a/packages/pptx-react/src/worker/peerlessViewStore.ts
++++ b/packages/pptx-react/src/worker/peerlessViewStore.ts
+@@ -79,7 +79,11 @@ export interface PeerlessViewStore {
+   subscribePresentation(listener: () => void): () => void;
+   subscribeStructure(listener: () => void): () => void;
+   subscribeEditState(listener: () => void): () => void;
+-  dispatch(intent: PresentationCommandIntent, options?: { reportRefusal?: boolean }): Promise<PresentationCommandAck>;
++  dispatch(intent: PresentationCommandIntent, options?: {
++    reportRefusal?: boolean;
++    signal?: AbortSignal;
++    waitForPredecessor?: boolean;
++  }): Promise<PresentationCommandAck>;
+   fence(): Promise<void>;
+   setSelection(selection: PresentationCommandSelection | null): void;
+   setFocused(focused: boolean): void;
+@@ -100,6 +104,7 @@ interface WaitingInput {
+   chunks: string[];
+   echoed: boolean;
+   quiet: boolean;
++  waitForPredecessor: boolean;
+   operation: Promise<PresentationCommandAck>;
+   resolve(ack: PresentationCommandAck): void;
+   reject(error: unknown): void;
+@@ -564,7 +569,7 @@ export function createPeerlessViewStore(
+       const predecessor = input.after?.ticket;
+       if (predecessor?.seq !== undefined) intent = chainedIntent(intent, predecessor.seq);
+       let submission: ReturnType<typeof sharedInput.submit>;
+-      try { submission = sharedInput.submit(intent, input.basis, predecessor); }
++      try { submission = sharedInput.submit(intent, input.basis, predecessor, input.waitForPredecessor); }
+       catch (error) { fail(error); input.reject(error); return; }
+       input.ticket = submission.ticket;
+       operation = submission.operation;
+@@ -615,7 +620,7 @@ export function createPeerlessViewStore(
+     subscribePresentation: (listener) => subscribe(presentation, listener),
+     subscribeStructure: (listener) => subscribe(structure, listener),
+     subscribeEditState: (listener) => subscribe(editState, listener),
+-    dispatch(intent, { reportRefusal = true } = {}) {
++    dispatch(intent, { reportRefusal = true, signal, waitForPredecessor = false } = {}) {
+       if (disposed) return Promise.reject(new PptxWorkerEditorDisposedError());
+       if (failure) return Promise.reject(failure);
+       if (view.inputFailure) view = { ...view, inputFailure: undefined };
+@@ -623,7 +628,8 @@ export function createPeerlessViewStore(
+       const predecessor = sharedInput ? chainTailInput?.ticket?.seq ?? selectionTailSeq : chainTail;
+       const originalReference = 'at' in intent.payload ? intent.payload.at : undefined;
+       const after = sharedInput && !wasKnown &&
+-        ('at' in intent.payload || intent.kind === 'setSelection' || intent.kind === 'compositionEnd')
++        ('at' in intent.payload || intent.kind === 'setSelection' || intent.kind === 'compositionEnd' ||
++          intent.kind === 'selectObject')
+         ? chainTailInput : originalReference && resultReferences.get(originalReference);
+       if (!wasKnown && ('at' in intent.payload || intent.kind === 'setSelection' || intent.kind === 'compositionEnd')) {
+         intent = chainedIntent(intent, predecessor);
+@@ -661,7 +667,7 @@ export function createPeerlessViewStore(
+       void operation.then(() => { captured.delete(operation); }, () => { captured.delete(operation); });
+       const input: WaitingInput = { seq, intent, after, basisThroughSeq: view.presentedThroughSeq,
+         basis: { epoch: identity.epoch, version: view.confirmed?.frame.version ?? client.state.version },
+-        echoed, quiet: !reportRefusal, chunks: [], operation, resolve, reject };
++        echoed, quiet: !reportRefusal, waitForPredecessor, chunks: [], operation, resolve, reject };
+       let target: PresentationCommandSelected | null | undefined;
+       if (intent.kind === 'selectAtPoint' && !intent.payload.drag) {
+         const hit = hitGeometry(geometry, intent.payload);
+@@ -682,6 +688,17 @@ export function createPeerlessViewStore(
+         view = { ...view, waitingInputCount: waiting.length };
+         if (intent.kind !== 'collabPipe') notify(presentation);
+       } else send(input);
++      if (signal) {
++        const abort = () => {
++          if (input.ticket && sharedInput?.cancel(input.ticket) && chainTailInput === input) {
++            chainTailInput = input.after;
++          }
++        };
++        signal.addEventListener('abort', abort, { once: true });
++        const cleanup = () => signal.removeEventListener('abort', abort);
++        void operation.then(cleanup, cleanup);
++        if (signal.aborted) abort();
++      }
+       return operation;
+     },
+     async fence() {
+diff --git a/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts b/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts
+index ba8992c8b30fdb082205942f4327bb279f06f1fd..a0431c42a49b4ffe8f25e4fe3d311b0755969614 100644
+--- a/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts
++++ b/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts
+@@ -21,6 +21,7 @@ interface ShapeGesture {
+   selected: PresentationCommandObjectSelection | null;
+   dragging: boolean;
+   cancelled: boolean;
++  abort: AbortController;
+ }
+ 
+ export interface PeerlessShapePreview {
+@@ -72,17 +73,29 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+     for (const listener of previewListeners.current) listener();
+   }, []);
+ 
+-  const cancel = useCallback(() => {
++  const cancelActive = useCallback(() => {
+     const current = gesture.current;
+     if (store) setPeerlessGestureActive(store, 'shape', false);
+     gesture.current = null;
+     recent.current = null;
+-    for (const pending of outstanding.current) pending.cancelled = true;
+-    outstanding.current.clear();
+-    if (current) current.element.releasePointerCapture?.(current.pointerId);
++    if (current) {
++      current.cancelled = true;
++      current.abort.abort();
++      outstanding.current.delete(current);
++      current.element.releasePointerCapture?.(current.pointerId);
++    }
+     setPreview(null);
+   }, [store, setPreview]);
+ 
++  const cancel = useCallback(() => {
++    cancelActive();
++    for (const pending of outstanding.current) {
++      pending.cancelled = true;
++      pending.abort.abort();
++    }
++    outstanding.current.clear();
++  }, [cancelActive]);
++
+   useEffect(() => {
+     setPreview(null);
+     if (!store) return;
+@@ -102,7 +115,10 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+       const current = gesture.current;
+       setPeerlessGestureActive(store, 'shape', false);
+       gesture.current = null;
+-      for (const pending of outstanding.current) pending.cancelled = true;
++      for (const pending of outstanding.current) {
++        pending.cancelled = true;
++        pending.abort.abort();
++      }
+       outstanding.current.clear();
+       recent.current = null;
+       current?.element.releasePointerCapture?.(current.pointerId);
+@@ -133,28 +149,30 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+     if (handle && !RESIZE_HANDLES.includes(handle)) return false;
+     const selected = store.getSnapshot().selection;
+     const scale = canvas.current.getBoundingClientRect().width / confirmed.displayList.width;
+-    if (handle && (selected?.kind !== 'object' || !selected.canResize || store.getSnapshot().editState.readOnly)) return true;
++    if (handle && (!selected || selected.kind === 'object' && !selected.canResize ||
++      store.getSnapshot().editState.readOnly)) return true;
+     const hit = handle ? null : hitConfirmedGeometry(store, start, scale);
+     if (!handle && hit?.kind !== 'shape') return false;
+-    const shapeId = handle && selected?.kind === 'object' ? selected.shapeId : hit!.shapeId;
++    const shapeId = handle ? selected!.shapeId : hit!.shapeId;
+     const previous = recent.current;
+     const repeated = !handle && previous?.slideId === confirmed.frame.slideId && previous.shapeId === shapeId &&
+       event.timeStamp >= previous.time && event.timeStamp - previous.time <= 600 &&
+       Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 6;
+-    cancel();
++    cancelActive();
+     const { slideId, slideRevision, coversThroughSeq, documentEpoch, incarnation } = confirmed.frame;
+     const frame = { slideId, slideRevision, coversThroughSeq, documentEpoch, incarnation };
+     const group = `shape-${++nextShapeGroup}`;
+     const operation = handle && selected?.kind === 'object' ? Promise.resolve(selected)
+-      : store.dispatch({ kind: 'selectObject', payload: { frame, x: start.x, y: start.y, scale,
+-        inputTime: event.timeStamp, undoGroup: group } }).then((ack) =>
++      : store.dispatch({ kind: 'selectObject', payload: handle
++        ? { frame, shapeId, inputTime: event.timeStamp, undoGroup: group }
++        : { frame, x: start.x, y: start.y, scale, inputTime: event.timeStamp, undoGroup: group } }).then((ack) =>
+         ack.outcomes.some((outcome) => outcome.status === 'refused' || outcome.status === 'cancelled') ||
+         ack.selection?.kind !== 'object' ? null : ack.selection, () => null);
+     const current: ShapeGesture = { pointerId: event.pointerId, element: event.currentTarget, frame, group,
+       start, client: { x: event.clientX, y: event.clientY }, delta: { x: 0, y: 0 },
+       shapeId, dragThreshold: repeated ? 8 : 4,
+       handle, object: operation, selected: handle && selected?.kind === 'object' ? selected : null,
+-      dragging: false, cancelled: false };
++      dragging: false, cancelled: false, abort: new AbortController() };
+     gesture.current = current;
+     setPeerlessGestureActive(store, 'shape', true);
+     outstanding.current.add(current);
+@@ -166,7 +184,7 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+     event.currentTarget.focus();
+     event.currentTarget.setPointerCapture?.(event.pointerId);
+     return true;
+-  }, [store, presentation, canvas, cancel, position, paint]);
++  }, [store, presentation, canvas, cancelActive, position, paint]);
+ 
+   const hoverCursor = useCallback((event: PointerEvent<HTMLElement>): string | null => {
+     if (event.buttons !== 0 || (store && peerlessGestureActive(store))) return null;
+@@ -206,32 +224,53 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+       outstanding.current.delete(current);
+       return true;
+     }
+-    outstanding.current.delete(current);
+-    if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) return true;
+-    const object = current.selected;
+-    if (!object) {
++    const commit = (object: PresentationCommandObjectSelection) => {
++      outstanding.current.delete(current);
++      if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) return;
++      const rect = peerlessGestureRect(object, delta, current.handle);
++      if (!rect || Object.keys(rect).every((key) =>
++        rect[key as keyof ShapeRect] === object.rect![key as keyof ShapeRect])) return;
++      const payload = { frame: current.frame,
++        target: { slideId: object.slideId, shapeId: object.shapeId, token: object.token },
++        inputTime, undoGroup: current.group };
++      void store.dispatch(current.handle ? { kind: 'setShapeRect', payload: { ...payload, rect } }
++        : { kind: 'moveShape', payload: { ...payload, x: rect.x, y: rect.y } }).catch(() => {});
++    };
++    if (!current.selected) {
++      if (current.handle) {
++        if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) return true;
++        const at = peerlessInputReference(store, true);
++        if (at?.source === 'afterSeq') {
++          const resize = store.dispatch({ kind: 'setShapeRect', payload: { at, frame: current.frame,
++            shapeId: current.shapeId, handle: current.handle, delta,
++            inputTime, undoGroup: current.group } }, {
++            reportRefusal: false, signal: current.abort.signal, waitForPredecessor: true,
++          });
++          void resize.then(() => { outstanding.current.delete(current); },
++            () => { outstanding.current.delete(current); });
++        } else {
++          outstanding.current.delete(current);
++        }
++        return true;
++      }
++      outstanding.current.delete(current);
++      if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) return true;
+       const at = peerlessInputReference(store, true);
+-      if (at?.source === 'afterSeq' && !current.handle) {
++      if (at?.source === 'afterSeq') {
+         void store.dispatch({ kind: 'moveShape', payload: { at, frame: current.frame,
+           shapeId: current.shapeId, delta, inputTime, undoGroup: current.group } }).catch(() => {});
+       }
+       return true;
+     }
+-    const rect = peerlessGestureRect(object, delta, current.handle);
+-    if (!rect || Object.keys(rect).every((key) => rect[key as keyof ShapeRect] === object.rect![key as keyof ShapeRect])) return true;
+-    const payload = { frame: current.frame,
+-      target: { slideId: object.slideId, shapeId: object.shapeId, token: object.token },
+-      inputTime, undoGroup: current.group };
+-    void store.dispatch(current.handle ? { kind: 'setShapeRect', payload: { ...payload, rect } }
+-      : { kind: 'moveShape', payload: { ...payload, x: rect.x, y: rect.y } }).catch(() => {});
++    commit(current.selected);
+     return true;
+   }, [store, presentation, position, setPreview]);
+ 
+   const onPointerCancel = useCallback((event: PointerEvent<HTMLElement>): boolean => {
+     if (gesture.current?.pointerId !== event.pointerId) return false;
+-    cancel();
++    cancelActive();
+     return true;
+-  }, [cancel]);
++  }, [cancelActive]);
+ 
+   const onKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
+     if (event.key !== 'Escape' || !outstanding.current.size) return;
+diff --git a/packages/pptx/src/session/commandClient.ts b/packages/pptx/src/session/commandClient.ts
+index de3a7760035294096b46fbe0b269b571ad683a34..84ff3ebefd43ff9fbaf2bb5291f5bb6e68982b51 100644
+--- a/packages/pptx/src/session/commandClient.ts
++++ b/packages/pptx/src/session/commandClient.ts
+@@ -5,7 +5,7 @@ import { createPresentationCollaborationPipe, presentationCollaborationPipes } f
+ import { createSessionClient } from '../../../../shared/office-session/client';
+ import type { SessionTransport } from '../../../../shared/office-session/transport';
+ import { SessionFailure } from '../../../../shared/office-session/types';
+-import { createWorkerEditSession } from '../../../../shared/office-session/commands/session';
++import { cancelWorkerEditTicket, createWorkerEditSession } from '../../../../shared/office-session/commands/session';
+ import type { CommandTicket } from '../../../../shared/office-session/commands/types';
+ import type { PptxFontFace } from '../types';
+ import { createPresentationSharedAdapter,
+@@ -314,15 +314,17 @@ async function createCommandClient(
+     requestFullFrame: async () => ({ ...latestSharedAck!, outcomes: [], frame: undefined }),
+   }) : undefined;
+   const sharedInput: PresentationSharedInput | undefined = editSession && {
++    cancel: (ticket) => cancelWorkerEditTicket(editSession, ticket),
+     subscribeSent(listener) {
+       if (!disposed) sentListeners.add(listener);
+       return () => { sentListeners.delete(listener); };
+     },
+-    submit(intent, basis, after) {
++    submit(intent, basis, after, waitForAfter = false) {
+       const reference = 'at' in intent.payload ? intent.payload.at : undefined;
+       const predecessor = after ?? (reference?.source === 'afterSeq' ? tickets.get(reference.seq) : undefined);
+       const ticket = editSession.submit(intent.kind, { intent, basis }, {
+         ...(predecessor ? { after: predecessor } : {}),
++        ...(waitForAfter ? { waitForAfter: true } : {}),
+       });
+       if (ticket.seq !== undefined) {
+         tickets.set(ticket.seq, ticket);
+diff --git a/packages/pptx/src/session/commandHost.ts b/packages/pptx/src/session/commandHost.ts
+index ea9d7c06fed6d0b52c48303d6524fb6d07c1fb03..5307f351fb73943c995ffb5ff4de6a55e6f23d0a 100644
+--- a/packages/pptx/src/session/commandHost.ts
++++ b/packages/pptx/src/session/commandHost.ts
+@@ -5,6 +5,7 @@ import type { PptxPresenceCursor } from '../collaboration/types';
+ import { createPresentationCollaboration } from './collaboration';
+ import { transferable, type TransferResult } from '../../../../shared/office-session/protocol';
+ import { isCommandEnvelope } from '../../../../shared/office-session/commands/types';
++import { resizedShapeRect } from '../../../../shared/office-session/shapeResize';
+ import { extendTextRange, graphemeBoundaries, textRangeAt } from '../../../../shared/textSelection';
+ import { SessionFailure, type MethodHandlers, type MethodPolicies } from '../../../../shared/office-session/types';
+ import type { PptxEditRequest, PptxEditResult, PptxStoryTarget, PptxStoryText, PptxTextField } from '../edits';
+@@ -91,6 +92,7 @@ export function registerPresentationCommandHandlers(
+     version: string; beforeText: string };
+   type FormattingProjection = { formatting: TextStyleSnapshot; alignment: ParagraphAlignment | null };
+   type CachedStory = { text: PptxStoryText; snapshot: StorySnapshot; echoRanges: { start: number; end: number }[];
++    canResize: boolean;
+     formatting?: StorySnapshot;
+     toolbar?: { story: StorySnapshot; selection: PresentationCommandSelection; marks: TextStyle;
+       result: FormattingProjection };
+@@ -156,6 +158,14 @@ export function registerPresentationCommandHandlers(
+ 
+   function cacheStories(content: Extract<PresentationCommandReadResult, { ok: true }>): void {
+     for (const slide of content.slides) notes.set(slide.id, slide.notes ?? '');
++    const resize = new Map<string, boolean>();
++    const visit = (shapes: readonly ShapeSnapshot[], topLevel: boolean) => {
++      for (const shape of shapes) {
++        for (const story of shape.textStories) resize.set(story.id, topLevel && canResizeShape(shape));
++        visit(shape.children ?? [], false);
++      }
++    };
++    for (const slide of content.slides) visit(slide.shapes ?? [], true);
+     const sources = new Map(content.sources.map((source) => [source.storyId, source.paragraphs]));
+     for (const story of content.stories) {
+       const key = storyKey(story);
+@@ -163,6 +173,7 @@ export function registerPresentationCommandHandlers(
+       keys.add(key);
+       slideStoryKeys.set(story.slideId, keys);
+       stories.set(key, { text: story, snapshot: presentation().story(story.storyId), echoRanges: [],
++        canResize: resize.get(story.storyId) ?? false,
+         source: new Map((sources.get(story.storyId) ?? []).map((paragraph) => {
+           const live = story.paragraphs.find((value) => value.paragraphId === paragraph.paragraphId)!;
+           const text = story.text.slice(live.start, live.end);
+@@ -579,7 +590,9 @@ export function registerPresentationCommandHandlers(
+     const reply = transferable<PresentationCommandAck>({ ...identity!, epoch: documentEpoch, throughSeq, version,
+       ...(updates.length ? { updates } : {}),
+       ...(observeChanges && commandOutcomes.some((outcome) => outcome.committed) ? { change: { ...identity!, throughSeq, version, snapshot: presentation().snapshot() } } : {}),
+-      selection: objectSelection ?? (selection ? { ...selection } : null), editState: edit, outcomes: commandOutcomes,
++      selection: objectSelection ?? (selection
++        ? { ...selection, canResize: stories.get(storyKey(selection))?.canResize ?? false } : null),
++      editState: edit, outcomes: commandOutcomes,
+       dirtySlideIds, activeSlideId, historyThroughSeq, ...(creation ? { creation } : {}), ...(editResult ? { editResult } : {}), ...(fontId !== undefined ? { fontId } : {}),
+       ...(history ? { slides: metadata!.slides, size: metadata!.size } : {}),
+       frame: result?.value ?? null }, [...(result?.transfer ?? []), ...updates.map((update) => update.bytes)]);
+@@ -743,9 +756,13 @@ export function registerPresentationCommandHandlers(
+       return object ? { kind: 'object', object } : 'bad-target';
+     }
+     if (command.kind === 'moveShape' || command.kind === 'setShapeRect') {
+-      const relative = command.kind === 'moveShape' && 'delta' in command.payload ? command.payload : null;
++      const relativeMove = command.kind === 'moveShape' && 'delta' in command.payload ? command.payload : null;
++      const relativeResize = command.kind === 'setShapeRect' && 'delta' in command.payload ? command.payload : null;
++      const relative = relativeMove ?? relativeResize;
+       if (relative && (relative.at.source !== 'afterSeq' || relative.at.seq !== throughSeq ||
+-        !relative.delta || !Number.isFinite(relative.delta.x) || !Number.isFinite(relative.delta.y))) return 'invalid-payload';
++        !relative.delta || !Number.isFinite(relative.delta.x) || !Number.isFinite(relative.delta.y) ||
++        relativeResize &&
++        !['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].includes(relativeResize.handle))) return 'invalid-payload';
+       const object = relative ? objectSelection?.shapeId === relative.shapeId
+         ? transformTarget(objectSelection) : null : 'target' in command.payload ? transformTarget(command.payload.target) : null;
+       if (!object) return 'bad-target';
+@@ -758,7 +775,10 @@ export function registerPresentationCommandHandlers(
+         ? { ...object.rect, x: object.rect.x + Math.round(relative.delta.x * object.units.x),
+           y: object.rect.y + Math.round(relative.delta.y * object.units.y) }
+         : 'x' in command.payload ? { ...object.rect, x: command.payload.x, y: command.payload.y } : null
+-        : command.payload.rect;
++        : relativeResize ? resizedShapeRect(object.rect, relativeResize.handle, {
++          x: Math.round(relativeResize.delta.x * object.units.x),
++          y: Math.round(relativeResize.delta.y * object.units.y),
++        }, MIN_SHAPE_SIZE_EMU, object.aspectRatioLocked) : 'rect' in command.payload ? command.payload.rect : null;
+       if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isSafeInteger) ||
+         rect.width <= 0 || rect.height <= 0 || !move &&
+         (rect.width !== object.rect.width && rect.width < MIN_SHAPE_SIZE_EMU ||
+diff --git a/packages/pptx/src/session/commandProtocol.ts b/packages/pptx/src/session/commandProtocol.ts
+index d1a283aa7edb7f54b75331c277dc894b91d6f16e..adbff78bdfc61cf736ad77882c0f2ac615aca333 100644
+--- a/packages/pptx/src/session/commandProtocol.ts
++++ b/packages/pptx/src/session/commandProtocol.ts
+@@ -40,6 +40,8 @@ export interface PresentationCommandSelection extends PptxStoryTarget {
+   focus: number;
+   affinity: 'upstream' | 'downstream';
+   goalX?: number;
++  /** Whether the selected story's owning shape is an eligible top-level resize target. */
++  canResize?: boolean;
+ }
+ 
+ export interface PresentationCommandObjectSelection extends Omit<PresentationCommandSelection, 'kind'> {
+@@ -68,6 +70,8 @@ export type PresentationCommandSelectionReference =
+ export type PresentationCommandMotion = 'left' | 'right' | 'wordLeft' | 'wordRight'
+   | 'lineStart' | 'lineEnd' | 'storyStart' | 'storyEnd' | 'up' | 'down' | 'nextCell' | 'previousCell';
+ 
++export type PresentationCommandResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
++
+ export type PresentationCommandFrameTag = Pick<PresentationCommandFrame,
+   'slideId' | 'slideRevision' | 'coversThroughSeq' | 'documentEpoch' | 'incarnation'>;
+ 
+@@ -101,8 +105,10 @@ export type PresentationCommandPayloads = {
+   } & ({ target: PresentationCommandObjectTarget; x: number; y: number }
+     | { at: PresentationCommandSelectionReference; shapeId: string; delta: { x: number; y: number } });
+   setShapeRect: PresentationCommandInput & {
+-    frame: PresentationCommandFrameTag; target: PresentationCommandObjectTarget; rect: ShapeRect;
+-  };
++    frame: PresentationCommandFrameTag;
++  } & ({ target: PresentationCommandObjectTarget; rect: ShapeRect }
++    | { at: PresentationCommandSelectionReference; shapeId: string; handle: PresentationCommandResizeHandle;
++      delta: { x: number; y: number } });
+   undo: PresentationCommandInput;
+   redo: PresentationCommandInput;
+   activateSlide: Partial<PresentationCommandInput> & { slideId: string };
+diff --git a/packages/pptx/src/session/commandS3.test.ts b/packages/pptx/src/session/commandS3.test.ts
+index 9a023d7ef971cac1494cb5dad94a454b0b6c3c93..4fc3ca6f8976ba203400d46b7d6b06921ca228e9 100644
+--- a/packages/pptx/src/session/commandS3.test.ts
++++ b/packages/pptx/src/session/commandS3.test.ts
+@@ -36,7 +36,7 @@ const input = { inputTime: 1, undoGroup: 's3' };
+ 
+ function selection(story: PptxStoryText, anchor = 0, focus = anchor): PresentationCommandSelection {
+   return { slideId: story.slideId, shapeId: story.shapeId, storyId: story.storyId,
+-    anchor, focus, affinity: 'downstream' };
++    anchor, focus, affinity: 'downstream', canResize: true };
+ }
+ 
+ async function open(bytes?: Uint8Array) {
+diff --git a/packages/pptx/src/session/commandS4.test.ts b/packages/pptx/src/session/commandS4.test.ts
+index ad11db785435ab7061e40df422094b9769027cf9..9504141fb584a79bab391cb5185d9a5ec82952a7 100644
+--- a/packages/pptx/src/session/commandS4.test.ts
++++ b/packages/pptx/src/session/commandS4.test.ts
+@@ -16,7 +16,7 @@ const input = { inputTime: 1, undoGroup: 'typing' };
+ 
+ function selection(story: PptxStoryText, anchor = 0, focus = anchor): PresentationCommandSelection {
+   return { slideId: story.slideId, shapeId: story.shapeId, storyId: story.storyId,
+-    anchor, focus, affinity: 'downstream' };
++    anchor, focus, affinity: 'downstream', canResize: true };
+ }
+ 
+ async function deck(): Promise<Uint8Array> {
+diff --git a/packages/pptx/src/session/commandS6.test.ts b/packages/pptx/src/session/commandS6.test.ts
+index dc8505a6f040176aa7b0023d7fc9871e63c9893a..341e2049e2c24073130b0a94c40604476a5a2171 100644
+--- a/packages/pptx/src/session/commandS6.test.ts
++++ b/packages/pptx/src/session/commandS6.test.ts
+@@ -131,6 +131,29 @@ test('shape_transform_read_only_and_frame_basis', async () => {
+   } finally { await session.dispose(); }
+ });
+ 
++test('relative resize resolves the selected shape after its predecessor', async () => {
++  const session = await open();
++  try {
++    const selected = await session.command(session.state, 1, { kind: 'selectObject', payload: {
++      ...input, frame: session.state.frame, shapeId: session.story.shapeId,
++    } });
++    const object = selected.selection;
++    if (object?.kind !== 'object' || !object.rect) throw new Error('Object selection required');
++    const delta = { x: 30, y: 0 };
++    const resized = await session.command(selected, 2, { kind: 'setShapeRect', payload: {
++      ...input, at: { source: 'afterSeq', seq: 1 }, frame: selected.frame,
++      shapeId: object.shapeId, handle: 'e', delta,
++    } }, 1);
++    expect(resized.outcomes[0]).toMatchObject({ status: 'applied', committed: true });
++    expect(resized.selection).toMatchObject({ kind: 'object', rect: {
++      x: object.rect.x,
++      width: object.rect.width + Math.round(delta.x * object.units.x),
++    } });
++    expect(session.handle().snapshot().slides[0]!.shapes[0]!.width)
++      .toBe(object.rect.width + Math.round(delta.x * object.units.x));
++  } finally { await session.dispose(); }
++});
++
+ test('shape_identity_selection_checks_target_and_frame', async () => {
+   const session = await open();
+   try {
+diff --git a/packages/pptx/src/session/commandSession.test.ts b/packages/pptx/src/session/commandSession.test.ts
+index 05a270f0a118b6202be47bddb059a2757d693428..7fc20b12a1a1e685187d309e2449a5a414e819e2 100644
+--- a/packages/pptx/src/session/commandSession.test.ts
++++ b/packages/pptx/src/session/commandSession.test.ts
+@@ -86,7 +86,7 @@ function content(result: PptxReadResult): Content {
+ 
+ function selection(story: PptxStoryText, anchor = 0, focus = anchor): PresentationCommandSelection {
+   return { slideId: story.slideId, shapeId: story.shapeId, storyId: story.storyId,
+-    anchor, focus, affinity: 'downstream' };
++    anchor, focus, affinity: 'downstream', canResize: true };
+ }
+ 
+ function insert(at: PresentationCommandSelection, text: string): PresentationCommandIntent {
+diff --git a/packages/pptx/src/session/commandSession.ts b/packages/pptx/src/session/commandSession.ts
+index 9eba6b06c5368410cb5245c3197cd67747f230cd..8f966bd01992c71886fe86b25ebd541d40f88ed1 100644
+--- a/packages/pptx/src/session/commandSession.ts
++++ b/packages/pptx/src/session/commandSession.ts
+@@ -156,10 +156,11 @@ export function createPptxWorkerSession(
+     if (pipe) presentationCollaborationPipes.set(facade, pipe);
+     const sharedInput = presentationSharedInputs.get(opened);
+     if (sharedInput) presentationSharedInputs.set(facade, {
++      cancel: (ticket) => sharedInput.cancel(ticket),
+       subscribeSent: (listener) => sharedInput.subscribeSent(listener),
+-      submit(intent, basis, after) {
++      submit(intent, basis, after, waitForAfter) {
+         current();
+-        const submission = sharedInput.submit(intent, basis, after);
++        const submission = sharedInput.submit(intent, basis, after, waitForAfter);
+         return { ticket: submission.ticket, operation: perform(() => submission.operation) };
+       },
+     });
+diff --git a/packages/pptx/src/session/commandSharedInput.ts b/packages/pptx/src/session/commandSharedInput.ts
+index 285339ad93451d4c68e8e8641b9a6465fa778f0d..edbf4c14f8ab7f7401a1d0e788422b030c409658 100644
+--- a/packages/pptx/src/session/commandSharedInput.ts
++++ b/packages/pptx/src/session/commandSharedInput.ts
+@@ -5,7 +5,9 @@ import type {
+ 
+ export interface PresentationSharedInput {
+   subscribeSent(listener: () => void): () => void;
+-  submit(intent: PresentationCommandIntent, basis: PresentationCommandBasis, after?: CommandTicket): {
++  cancel(ticket: CommandTicket): boolean;
++  submit(intent: PresentationCommandIntent, basis: PresentationCommandBasis, after?: CommandTicket,
++    waitForAfter?: boolean): {
+     ticket: CommandTicket;
+     operation: Promise<PresentationCommandAck>;
+   };
+diff --git a/packages/pptx/src/worker.ts b/packages/pptx/src/worker.ts
+index a94ef344a851aebd4e63ff3f0d033f9a2a425032..4b39831a91bf303455922a1a8d88232f5ce013ef 100644
+--- a/packages/pptx/src/worker.ts
++++ b/packages/pptx/src/worker.ts
+@@ -68,7 +68,7 @@ export type {
+   PresentationCommandOutcome, PresentationCommandPayloads, PresentationCommandReadResult,
+   PresentationCommandRefusalReason, PresentationCommandSaveResult, PresentationCommandSelection,
+   PresentationCommandSelected, PresentationCommandObjectSelection, PresentationCommandObjectTarget,
+-  PresentationCommandSelectionReference, PresentationCommandTextInput,
++  PresentationCommandResizeHandle, PresentationCommandSelectionReference, PresentationCommandTextInput,
+   PresentationCommandThumbnailRequest, PresentationCommandThumbnailResult, PresentationCommandToolbarContext,
+ } from './session/commandProtocol';
+ 
+diff --git a/shared/office-session/commands/session.test.ts b/shared/office-session/commands/session.test.ts
+index c6f2aeb889e7784a023400b53f8c176ea546ca1b..7f62f5b65ed8a719def49faae108882961e231cf 100644
+--- a/shared/office-session/commands/session.test.ts
++++ b/shared/office-session/commands/session.test.ts
+@@ -1,6 +1,6 @@
+ import { describe, expect, it } from 'bun:test';
+ import { SessionFailure } from '../types';
+-import { createWorkerEditSession } from './session';
++import { cancelWorkerEditTicket, createWorkerEditSession } from './session';
+ import type {
+   Checkpoint, CommandAck, CommandConnection, CommandEnvelope, CommandOutcome,
+   CommandTicket, EchoHooks, FrameEnvelope, WorkerEditSessionOptions,
+@@ -83,6 +83,21 @@ function harness(overrides: Partial<WorkerEditSessionOptions<string, string, str
+ }
+ 
+ describe('worker edit session', () => {
++  it('cancels a command waiting for its predecessor before assigning a sequence', async () => {
++    const h = harness();
++    const predecessor = h.session.submit('select', 'shape');
++    const resize = h.session.submit('resize', 'east', { after: predecessor, waitForAfter: true });
++    h.pump();
++    expect(h.calls.map((call) => call.envelope.payload)).toEqual(['shape']);
++    expect(cancelWorkerEditTicket(h.session, resize)).toBe(true);
++    expect(await resize.ack).toMatchObject({ seq: undefined, status: 'cancelled', reason: 'cancelled' });
++    h.ack(0);
++    await predecessor.ack;
++    h.pump();
++    expect(h.calls.map((call) => call.envelope.payload)).toEqual(['shape']);
++    await h.session.dispose();
++  });
++
+   for (const transactionalPresentation of [false, true]) {
+     it(`releases a painter-owned frame once when a ${transactionalPresentation ? 'transactional' : 'cosmetic'} presentation overrun disposes the session`, async () => {
+       let closes = 0;
+diff --git a/shared/office-session/commands/session.ts b/shared/office-session/commands/session.ts
+index 39a6e6138a05c66d5296c3c15709f7b7f806807a..1ec2fee8bb0fe5da8a2122800e2d5c6fa3082aca 100644
+--- a/shared/office-session/commands/session.ts
++++ b/shared/office-session/commands/session.ts
+@@ -89,6 +89,13 @@ function limit(value: number | undefined, fallback: number): number {
+   return value !== undefined && Number.isSafeInteger(value) && value > 0 ? value : fallback;
+ }
+ 
++const cancellers = new WeakMap<object, (ticket: CommandTicket) => boolean>();
++
++/** @internal Cancels one unmerged command and its queued dependents. */
++export function cancelWorkerEditTicket(session: object, ticket: CommandTicket): boolean {
++  return cancellers.get(session)?.(ticket) ?? false;
++}
++
+ /** @internal Creates a worker-backed edit session with coverage reconciliation and ordered recovery. */
+ export function createWorkerEditSession<O, P, S, E, F, X, Q extends QueryTable = {}>(
+   options: WorkerEditSessionOptions<O, P, S, E, F, X, Q>
+@@ -1022,7 +1029,8 @@ export function createWorkerEditSession<O, P, S, E, F, X, Q extends QueryTable =
+     const after = entry.draft.options.after;
+     if (!after) return true;
+     const dependency = records.get(after);
+-    return dependency !== undefined && dependency.seq !== undefined && !dependencyBlocked(after);
++    return dependency !== undefined && dependency.seq !== undefined &&
++      (!entry.draft.options.waitForAfter || dependency.ackSettled) && !dependencyBlocked(after);
+   }
+ 
+   function send(entry: OutboxEntry<P, X>, record: ConnectionRecord<P, S, E, F>): void {
+@@ -1186,6 +1194,22 @@ export function createWorkerEditSession<O, P, S, E, F, X, Q extends QueryTable =
+     });
+   }
+ 
++  const cancel = (ticket: CommandTicket): boolean => {
++    if (disposed || terminal) return false;
++    const target = outbox.entries.find((entry) => entry.tickets.includes(ticket));
++    if (!target || target.tickets.length !== 1) return false;
++    let cancelled = false;
++    presenter.event(() => {
++      const removed = outbox.remove((entry) => entry === target);
++      for (const entry of removed) {
++        const direct = entry === target;
++        cancelTickets(entry.tickets, direct ? 'cancelled' : 'dependency-refused');
++        cancelled ||= direct;
++      }
++      if (waitingReads.size) checkReads();
++    });
++    return cancelled;
++  };
+   const session: WorkerEditSession<P, S, E, X, Q> = {
+     backend: 'worker', get state() { return state; }, submit, attachEcho, read, hold,
+     get stage() { return disposed ? 'disposed' : terminal ? 'failed' : recovering ? 'recovering' : 'ready'; },
+@@ -1253,6 +1277,7 @@ export function createWorkerEditSession<O, P, S, E, F, X, Q extends QueryTable =
+       return disposal;
+     },
+   };
++  cancellers.set(session, cancel);
+   const first = attach(options.connection);
+   acceptAck(first, initial);
+   if (options.connection.client.failure) fail(options.connection.client.failure);
+diff --git a/shared/office-session/commands/types.ts b/shared/office-session/commands/types.ts
+index 4c34852073d03407bff3ca1cbe09a91fa9a57690..5106d1b2200ffa8bc19053260ec02b79c77d0e79 100644
+--- a/shared/office-session/commands/types.ts
++++ b/shared/office-session/commands/types.ts
+@@ -103,6 +103,8 @@ export type CommandLane = 'input' | 'collab' | 'background';
+ export type SubmitOptions<X> = {
+   lane?: CommandLane;
+   after?: CommandTicket;
++  /** Keep this command unsent until its dependency settles. */
++  waitForAfter?: boolean;
+   expectVersion?: boolean;
+   inputTime?: number;
+   lastInputTime?: number;
+diff --git a/shared/office-session/shapeResize.ts b/shared/office-session/shapeResize.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..f654a719e8e1d9aa3744d3bb975cfe7aaba270d6
+--- /dev/null
++++ b/shared/office-session/shapeResize.ts
+@@ -0,0 +1,54 @@
++export type ShapeResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
++
++export interface ShapeResizeRect {
++  x: number;
++  y: number;
++  width: number;
++  height: number;
++}
++
++export interface ShapeResizeDelta {
++  x: number;
++  y: number;
++}
++
++/** The rectangle produced by dragging a resize handle. Opposite edges stay
++ * fixed, and the rectangle never collapses past `minimum`. */
++export function resizedShapeRect(
++  bounds: ShapeResizeRect,
++  handle: ShapeResizeHandle,
++  delta: ShapeResizeDelta,
++  minimum: number,
++  aspectRatioLocked = false
++): ShapeResizeRect {
++  if (aspectRatioLocked && handle.length === 2 && bounds.width > 0 && bounds.height > 0) {
++    const dx = handle.includes('w') ? -delta.x : delta.x;
++    const dy = handle.startsWith('n') ? -delta.y : delta.y;
++    const scale = Math.max(1 + (dx * bounds.width + dy * bounds.height) /
++      (bounds.width ** 2 + bounds.height ** 2),
++    minimum / bounds.width, minimum / bounds.height);
++    const width = Math.round(bounds.width * scale);
++    const height = Math.round(bounds.height * scale);
++    return {
++      x: handle.includes('w') ? bounds.x + bounds.width - width : bounds.x,
++      y: handle.startsWith('n') ? bounds.y + bounds.height - height : bounds.y,
++      width, height,
++    };
++  }
++  let { x, y, width, height } = bounds;
++  if (handle.includes('w')) {
++    const dx = Math.min(delta.x, width - minimum);
++    x += dx;
++    width -= dx;
++  } else if (handle.includes('e')) {
++    width = Math.max(minimum, width + delta.x);
++  }
++  if (handle.startsWith('n')) {
++    const dy = Math.min(delta.y, height - minimum);
++    y += dy;
++    height -= dy;
++  } else if (handle.startsWith('s')) {
++    height = Math.max(minimum, height + delta.y);
++  }
++  return { x, y, width, height };
++}

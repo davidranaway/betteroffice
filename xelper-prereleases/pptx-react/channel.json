@@ -1,12 +1,32 @@
 {
-  "schemaVersion": 1,
-  "package": {
-    "name": "@davidranaway/betteroffice-pptx-react",
-    "version": "0.5.1-xelper.4",
-    "repository": "https://github.com/davidranaway/betteroffice.git",
-    "distTag": "xelper"
+  "schemaVersion": 2,
+  "releaseTag": "@davidranaway/betteroffice-pptx-react@0.5.1-xelper.5",
+  "repository": "https://github.com/davidranaway/betteroffice.git",
+  "distTag": "xelper",
+  "packages": {
+    "core": {
+      "sourceName": "@betteroffice/pptx",
+      "name": "@davidranaway/betteroffice-pptx",
+      "version": "0.5.1-xelper.1",
+      "sourceDirectory": "packages/pptx",
+      "dependencies": {
+        "@betteroffice/fonts": "0.5.1"
+      }
+    },
+    "react": {
+      "sourceName": "@betteroffice/pptx-react",
+      "name": "@davidranaway/betteroffice-pptx-react",
+      "version": "0.5.1-xelper.5",
+      "sourceDirectory": "packages/pptx-react",
+      "dependencies": {
+        "@betteroffice/fonts": "0.5.1",
+        "@betteroffice/pptx": "npm:@davidranaway/betteroffice-pptx@0.5.1-xelper.1",
+        "@betteroffice/pptx-i18n": "0.5.1"
+      }
+    }
   },
   "source": {
+    "repository": "https://github.com/openooxml/betteroffice.git",
     "tag": "@betteroffice/pptx-react@0.5.1",
     "commit": "4e982c3aea0065578604c3fe7727938533888f66"
   },
@@ -34,17 +54,20 @@
       }
     ]
   },
-  "dependencies": {
-    "@betteroffice/pptx": "0.5.1",
-    "@betteroffice/pptx-i18n": "0.5.1"
-  },
   "backports": [
     {
       "upstreamPullRequest": 2698,
+      "headRef": "origin/feat/pptx-slide-keyboard-navigation",
+      "headCommit": "aeb5b2c6591efa80906d84d55ea8e14aaf344a4f",
+      "mergeBase": "01ce3ff68c9dae75c4326c03a43a4bfb56355bc5",
       "behavior": "Full slide-strip keyboard navigation and focus retention",
       "reviewedCommits": [
         "541770e783cd972527b0f7e4592965dabcb9229e",
+        "107bba5de974ac18498ac7beac9b0e72cdcd935e",
         "aeb5b2c6591efa80906d84d55ea8e14aaf344a4f"
+      ],
+      "excludedReviewedPaths": [
+        ".changeset/pptx-slide-strip-arrow-navigation.md"
       ],
       "patch": "patches/0001-keep-focus-in-slide-strip.patch",
       "sha256": "77d8b91d45157c311b46f3704106cc89520daf667f118dc7def3dc17c8051664",
@@ -57,6 +80,215 @@
         "packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx": "9d0e631c38fd97679c25942355aedeacc5cd28b7ef68feeb1e32147145bcc32b",
         "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx": "d8ee182c4ef824f83ce479e62ad1cb0c442fb0d38c9474aa237b6bb07a764428",
         "packages/pptx-react/src/worker/PeerlessSlideStrip.tsx": "cda730708e9e9327442f4b1a00bc9a9aa34e0b3278e4fc518a8296c23e96b445"
+      }
+    },
+    {
+      "upstreamPullRequest": 2731,
+      "headRef": "origin/feat/pptx-text-edit-resize",
+      "headCommit": "ee120ee987ae54a10bb095bc318609caa02264b7",
+      "mergeBase": "857b6eaede3d1b17f04939bc863db1269befb7f6",
+      "behavior": "Text-edit resize handles with ordered, cancellable resize commits",
+      "reviewedCommits": [
+        "c219003cf5db46b8f4cd1cbfd3076a1dc4ff1c93",
+        "74dfb46716c681daa8516cda3419a8c1872e7489",
+        "659e9d50b3580a55b7d1a5e74ff7bafbb1041386",
+        "74f975cc4949475d919772e893ba4fbce0ecf51c",
+        "c78a045b7fa401a5be09f0c8ec9af68000c794b2",
+        "1b8872d74b348091fc603643d09a2ecde34d9c18",
+        "59a2dea4bda15be6fb32f433a17eb2d2829de131",
+        "80f1cd081d7e40eaa31fc8fc4380357b2c2da7cb",
+        "38e3235516fb3763c2bb400f11c5d1954954ae24",
+        "ee120ee987ae54a10bb095bc318609caa02264b7"
+      ],
+      "excludedReviewedPaths": [
+        "e2e/browser/async-mobile.browser.ts",
+        "packages/docx/api/files/shared/office-session/commands/types.api.d.ts",
+        "packages/pptx/api/worker.api.d.ts",
+        "packages/xlsx/api/index.api.d.ts",
+        "packages/xlsx/api/worker.api.d.ts"
+      ],
+      "patch": "patches/0002-keep-resize-handles-while-editing-text.patch",
+      "sha256": "42585142ab4adaec9353d86195f8d4dba86b10d9623c34588f597a30328da1fb",
+      "paths": [
+        "packages/pptx-react/src/interactions.ts",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx",
+        "packages/pptx-react/src/worker/PeerlessShapeOverlay.tsx",
+        "packages/pptx-react/src/worker/peerlessClipboard.ts",
+        "packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx",
+        "packages/pptx-react/src/worker/peerlessS6.test.tsx",
+        "packages/pptx-react/src/worker/peerlessViewStore.ts",
+        "packages/pptx-react/src/worker/usePeerlessShapeGestures.ts",
+        "packages/pptx/src/session/commandClient.ts",
+        "packages/pptx/src/session/commandHost.ts",
+        "packages/pptx/src/session/commandProtocol.ts",
+        "packages/pptx/src/session/commandS3.test.ts",
+        "packages/pptx/src/session/commandS4.test.ts",
+        "packages/pptx/src/session/commandS6.test.ts",
+        "packages/pptx/src/session/commandSession.test.ts",
+        "packages/pptx/src/session/commandSession.ts",
+        "packages/pptx/src/session/commandSharedInput.ts",
+        "packages/pptx/src/worker.ts",
+        "shared/office-session/commands/session.test.ts",
+        "shared/office-session/commands/session.ts",
+        "shared/office-session/commands/types.ts",
+        "shared/office-session/shapeResize.ts"
+      ],
+      "postPatchSha256": {
+        "packages/pptx-react/src/interactions.ts": "1442b21d87041d9db09e27df2d035a3a99f6996e1cb9f1424430bbc31ce939dd",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx": "00c252f9a0980fe01933795b275aadb2166a233c49d24f482a292c2579f943cd",
+        "packages/pptx-react/src/worker/PeerlessShapeOverlay.tsx": "9ab812bbabb7f91809bc8f04eabe1318e09d0cf1ff5e9bb0f47d6564a13fa72f",
+        "packages/pptx-react/src/worker/peerlessClipboard.ts": "8fd455af0a8808cb2e5b365094b2689c1fc3a86442b9098f4bb84d3b5fe10fcd",
+        "packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx": "8a1fc2c052784f264ad409b2e841ed36778ca7af263e9eecc02131080f695af0",
+        "packages/pptx-react/src/worker/peerlessS6.test.tsx": "7315b2d80291773558be5036dd712ba258d9da4dc45ee176353d1e41a7c214f9",
+        "packages/pptx-react/src/worker/peerlessViewStore.ts": "2fece6355895506dcef22734e17944b11fc8801dfebd2d9ef070c14f957c04fe",
+        "packages/pptx-react/src/worker/usePeerlessShapeGestures.ts": "21389662d4169ba5c00de907756f9caa661675703444cde82087610ff47c508d",
+        "packages/pptx/src/session/commandClient.ts": "d5206b465dd16cc583bd087ba5901b6fe228869b368f9227b3dc07bdaeb973dc",
+        "packages/pptx/src/session/commandHost.ts": "49d6b7d8255862acbcabb4fe5bfa7dd99ab83b6c5c0173eca42bd55b23842274",
+        "packages/pptx/src/session/commandProtocol.ts": "f8c372a5afa3dcc85f6287d7229a753f3b264f6a7e41b29455c57fad8f8f1d80",
+        "packages/pptx/src/session/commandS3.test.ts": "e672c81305aab377e3465bde5010c05659dab3f1c84d213d23468e5e54f259d1",
+        "packages/pptx/src/session/commandS4.test.ts": "fd9cb32acc20d88f13fb82a6dc02ba4e9b21f882fd310c036f173d2e13fdf99a",
+        "packages/pptx/src/session/commandS6.test.ts": "6b797196f4d49006523a203f25e54fcd83f19810624a134df70de39edb2738bb",
+        "packages/pptx/src/session/commandSession.test.ts": "1024674b8000d73a2ab38ba382d616f639e5a814275ad6b189588a6783f232bf",
+        "packages/pptx/src/session/commandSession.ts": "ce95f2e6f0600d049d0d7739c5373a2dfe2dfc54e90f408ad902530b0444647f",
+        "packages/pptx/src/session/commandSharedInput.ts": "f4cf6096fe71bc817e532105c7745da28ee6045c4ba9a5bba8fe7319e815c09b",
+        "packages/pptx/src/worker.ts": "686f6293fa872cfbb29138791062a2e2e0bec8b107fdbe8898612ed759dc8546",
+        "shared/office-session/commands/session.test.ts": "94903cf85d595fc0ccc8be5d0635bc04e10dcbf75059e4203ba1782cac117197",
+        "shared/office-session/commands/session.ts": "7d8c094eca4ae62e1be4ea864a03904cefb8d8d73380b880ca504d975f59d577",
+        "shared/office-session/commands/types.ts": "a2485b857e1ed4be8686c3dfa00b77296749493c8bdf4852b28f6f870ca37794",
+        "shared/office-session/shapeResize.ts": "078cc5d4c400e827060cae1b4a7eb7988360795dfea5462ed923bbd2f2d075be"
+      }
+    },
+    {
+      "upstreamPullRequest": 2732,
+      "headRef": "origin/feat/pptx-pinch-zoom",
+      "headCommit": "21d431f6fb5600ec20e99d97ecfd6bbdfe28e657",
+      "mergeBase": "857b6eaede3d1b17f04939bc863db1269befb7f6",
+      "behavior": "Cursor-anchored trackpad pinch zoom with stable rapid anchors",
+      "reviewedCommits": [
+        "666b7131070eefbe4fdc891437a3b687a5a1200e",
+        "b6dddf119708ac66939617f9c88089931fa09acf",
+        "b5acc462f5d3a168bd36369aa2fa6a3f9ee2898f",
+        "e87c106bb8c40512c75aac9ac99414f93843c8ce",
+        "1c1cefe77dba1a8cdb02a535e1c69b59733bd8b5",
+        "0b49127b2507e2afa0a7bcb838d38b1d3d82e281",
+        "21d431f6fb5600ec20e99d97ecfd6bbdfe28e657"
+      ],
+      "excludedReviewedPaths": [
+        ".changeset/pptx-pinch-zoom.md"
+      ],
+      "patch": "patches/0003-add-cursor-anchored-pinch-zoom.patch",
+      "sha256": "b189e691847e41b7f1c248314251b408eaded73bce9089c6110658b4d712dd9f",
+      "paths": [
+        "packages/pptx-react/src/PptxEditor.tsx",
+        "packages/pptx-react/src/usePptxPinchZoom.test.tsx",
+        "packages/pptx-react/src/usePptxPinchZoom.ts",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx"
+      ],
+      "postPatchSha256": {
+        "packages/pptx-react/src/PptxEditor.tsx": "604f2d870aa01fd37c0038a7dfe48717eb3709761949d1a50e8d4ea73cf4f49a",
+        "packages/pptx-react/src/usePptxPinchZoom.test.tsx": "c59616435ea2949a97b550c5eef0f2b803d3b43523ddfad85f67f9d554c4a74e",
+        "packages/pptx-react/src/usePptxPinchZoom.ts": "b7438a0391592d8fe8f34975d9e36f21975ccc98e969b31dcfb99afee2f7178a",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx": "ff4b3366e169c4998eb64964043cc58aa716263e1107a4947949f6df8fe76aa1"
+      }
+    },
+    {
+      "upstreamPullRequest": 2733,
+      "headRef": "origin/feat/pptx-live-resize-preview",
+      "headCommit": "2c83f162012d8fd07377726c02b3ba37be0f1aac",
+      "mergeBase": "857b6eaede3d1b17f04939bc863db1269befb7f6",
+      "behavior": "Authoritative non-mutating live preview for text-bearing shape resize",
+      "reviewedCommits": [
+        "32a44a093d26e5f60be8c8bac6b63c9c2ed9c2dc",
+        "ad221e73a1eba8f3a74a8b673e216a6b4a556ebe",
+        "2a9e0b1d4df4416b38ac9d01755c6c4b1aef11cd",
+        "2c83f162012d8fd07377726c02b3ba37be0f1aac"
+      ],
+      "adaptation": "The official 0.5.1 source predates the shared pptx-engine/native engine facade; the reviewed renderer contract and parity/non-mutation assertions are backported into its authoritative pptx-wasm renderer boundary.",
+      "excludedReviewedPaths": [
+        ".changeset/pptx-live-resize-preview.md",
+        "bindings/engine-parity/pptx.test.ts",
+        "bindings/pptx-native/engine.test.ts",
+        "bindings/pptx-native/index.d.ts",
+        "bindings/pptx-native/src/engine.rs",
+        "crates/pptx-engine/src/renderer.rs",
+        "packages/pptx/api/index.api.d.ts",
+        "packages/pptx/api/worker.api.d.ts"
+      ],
+      "patch": "patches/0004-add-live-text-shape-resize-preview.patch",
+      "sha256": "508e553ca639b1f77cabb7ceca1648630317c07ee50347e4d7f275c518a77df8",
+      "paths": [
+        "crates/pptx-wasm/src/lib.rs",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx",
+        "packages/pptx-react/src/worker/PeerlessShapeResizePreview.test.tsx",
+        "packages/pptx-react/src/worker/PeerlessShapeResizePreview.tsx",
+        "packages/pptx-react/src/worker/PeerlessTextInput.test.tsx",
+        "packages/pptx-react/src/worker/peerlessS6.test.tsx",
+        "packages/pptx-react/src/worker/peerlessViewStore.test.ts",
+        "packages/pptx-react/src/worker/usePeerlessPresentation.ts",
+        "packages/pptx-react/src/worker/usePeerlessShapeGestures.ts",
+        "packages/pptx/src/session/commandClient.ts",
+        "packages/pptx/src/session/commandFrame.ts",
+        "packages/pptx/src/session/commandHost.ts",
+        "packages/pptx/src/session/commandProtocol.ts",
+        "packages/pptx/src/session/commandS6.test.ts",
+        "packages/pptx/src/session/commandSession.ts",
+        "packages/pptx/src/wasm/generated/pptx_wasm.d.ts",
+        "packages/pptx/src/wasm/generated/pptx_wasm_bg.wasm.d.ts",
+        "packages/pptx/src/wasm/loader.ts",
+        "shared/office-session/testing/wasmWorker.ts"
+      ],
+      "postPatchSha256": {
+        "crates/pptx-wasm/src/lib.rs": "67f8a55a76e6727a30a8cdca9cbd8dc1710898e63e497b9658b41a64d0d1531b",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx": "e980470cd6558695ecafa5ee0f434e864f2a86cbfde5535e11c892c2e8d7f5ae",
+        "packages/pptx-react/src/worker/PeerlessPptxSurface.tsx": "cfbf1c578b5c0393f4aa8306d1e8c8dbdcfe1a73424b04be6d38881b0067024d",
+        "packages/pptx-react/src/worker/PeerlessShapeResizePreview.test.tsx": "ad8dcf62de637db6bb5e91dc09bb7a7e6b9363752748feb35ace1b8e5c615a6c",
+        "packages/pptx-react/src/worker/PeerlessShapeResizePreview.tsx": "d78e6ec8d1a97a93185f9dd7d149df35944be0c4e184afe8d790e48bd551d685",
+        "packages/pptx-react/src/worker/PeerlessTextInput.test.tsx": "f889f28a98e4e54ffc8d6111ba388f07d05af61b388a4194d9344cf88809649b",
+        "packages/pptx-react/src/worker/peerlessS6.test.tsx": "8c4867e608a582b2bbfd86e849b94065ce67c281f2a7ec6755e631b928cd3dc5",
+        "packages/pptx-react/src/worker/peerlessViewStore.test.ts": "815f93318d1cabcc8b68fc76f4b256d6e8f95c23d84030de4990748674183e8a",
+        "packages/pptx-react/src/worker/usePeerlessPresentation.ts": "e07c6825b7a9fdf78d64db4b7e20fdfdaef2cc7282c622357adbfe483c0519f1",
+        "packages/pptx-react/src/worker/usePeerlessShapeGestures.ts": "c547343aae511cb61cc86944e8e244ae99d7ebc3d2cdcc736c200695de85f6fa",
+        "packages/pptx/src/session/commandClient.ts": "f58cfcbf8a88301d020c977a91f5285012ed7a8ed43a9d0cbad2724aa121f1c3",
+        "packages/pptx/src/session/commandFrame.ts": "e978e0a6a064bf6f74111a4d11d1c136b3f3ca317ffe61ce420c5c654dfa47b8",
+        "packages/pptx/src/session/commandHost.ts": "af0f17d17189e0367f2467dd4c739527405ad5085bff7fce460e4dd7700eceb8",
+        "packages/pptx/src/session/commandProtocol.ts": "f9a4b5b666773c322bd8aa187b9d021325b912f360c2f5bbfbad698a2a2ff86b",
+        "packages/pptx/src/session/commandS6.test.ts": "55cb81c52226ab0b57844f67b6c7f4cfb0c092fb5e5b1663624060224e11ac66",
+        "packages/pptx/src/session/commandSession.ts": "7c2c9640b5a37126868ab446d5bf4728c12dbfcd5856dfd4be4fe5dbfb5976e9",
+        "packages/pptx/src/wasm/generated/pptx_wasm.d.ts": "f1ebd3d26eec36c6c66be0fb900a9d8f3b320d70117ae0ba381b8732c2232a03",
+        "packages/pptx/src/wasm/generated/pptx_wasm_bg.wasm.d.ts": "a06ea641614151d00f6e9ed83d192d44cfd9fa6c369f7b9a5c24a17c6c1c4029",
+        "packages/pptx/src/wasm/loader.ts": "1b4954c1dd728de9bb42a115af02b94031b86fddca1623f78e44007511beed69",
+        "shared/office-session/testing/wasmWorker.ts": "59a7312fa284980883f47ff81b480a3a33bccc5e6f6c67eea9b719a3c9e72a63"
+      }
+    }
+  ],
+  "compatibilityAdaptations": [
+    {
+      "behavior": "Official-0.5.1 Promise-aware shared edit forwarding and paint-count-neutral preview regression",
+      "sourceHunk": {
+        "commit": "fe7a97514f14c1d6bfa0be1a69b1364403e173b0",
+        "path": "packages/pptx/src/session/commandHost.ts",
+        "lines": [
+          1572,
+          1595,
+          1596
+        ],
+        "sha256": "0108c75a9764d9dcf2e48ffec768037c954682a400b42a848934d6b1200b116a",
+        "scope": "Only the Promise-aware edit return annotation and handlers.command result bridge; none of the commit\u2019s font work."
+      },
+      "testAdaptation": {
+        "path": "packages/pptx-react/src/worker/peerlessS6.test.tsx",
+        "scope": "Accept one or more official-0.5.1 paint commits, release every held commit, and preserve coverage and preview-removal assertions."
+      },
+      "patch": "patches/compatibility/0001-adapt-official-0.5.1-command-and-paint-contracts.patch",
+      "sha256": "06c1070bef3ebb61bf41611dc33cc0c9fb6e1395b253021fd3835e4fd0aa5b41",
+      "paths": [
+        "packages/pptx-react/src/worker/peerlessS6.test.tsx",
+        "packages/pptx/src/session/commandHost.ts"
+      ],
+      "postPatchSha256": {
+        "packages/pptx-react/src/worker/peerlessS6.test.tsx": "b35bca4a400ada954f1d8ffeccaf80e3982cbaf1b58b0a3dcc39a21f9a407f76",
+        "packages/pptx/src/session/commandHost.ts": "44feffbc6e6a9f1840b94c71c3ea1b0f141927eb2b85f726e14dc1c0939ff6c9"
       }
     }
   ]

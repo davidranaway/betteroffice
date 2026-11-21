@@ -1,0 +1,1199 @@
+diff --git a/crates/pptx-wasm/src/lib.rs b/crates/pptx-wasm/src/lib.rs
+index fe6f0fc6d..9f210f322 100644
+--- a/crates/pptx-wasm/src/lib.rs
++++ b/crates/pptx-wasm/src/lib.rs
+@@ -1,6 +1,6 @@
+ //! PPTX display-list wasm boundary.
+ 
+-use serde::{Serialize, ser};
++use serde::{Deserialize, Serialize, ser};
+ use std::collections::{BTreeMap, HashMap, HashSet};
+ use std::rc::Rc;
+ use wasm_bindgen::prelude::*;
+@@ -317,9 +317,77 @@ impl PptxRenderer {
+         }))
+         .map_err(js_error)
+     }
++
++    #[wasm_bindgen(js_name = previewShapeRectJson)]
++    pub fn preview_shape_rect_json(
++        &self,
++        document: &PptxDocument,
++        request: &str,
++    ) -> Result<String, JsValue> {
++        let request: ShapeRectPreviewRequest =
++            serde_json::from_str(request).map_err(js_error)?;
++        self.preview_shape_rect(
++            document.session(),
++            &request.slide_id,
++            &request.shape_id,
++            pptx_edit::ShapeRect {
++                x: request.x,
++                y: request.y,
++                width: request.width,
++                height: request.height,
++            },
++        )
++    }
++}
++
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase")]
++struct ShapeRectPreviewRequest {
++    slide_id: String,
++    shape_id: String,
++    x: i64,
++    y: i64,
++    width: i64,
++    height: i64,
+ }
+ 
+ impl PptxRenderer {
++    fn preview_shape_rect(
++        &self,
++        session: &pptx_edit::DeckSession,
++        slide_id: &str,
++        shape_id: &str,
++        rect: pptx_edit::ShapeRect,
++    ) -> Result<String, JsValue> {
++        const MAX_GEOMETRY: i64 = 1_000_000_000_000_000;
++        if rect.width <= 0
++            || rect.height <= 0
++            || [rect.x, rect.y, rect.width, rect.height]
++                .into_iter()
++                .any(|value| value.unsigned_abs() > MAX_GEOMETRY as u64)
++        {
++            return Err(JsValue::from_str("invalid shape rectangle"));
++        }
++        let slide_index = session
++            .slide_ids()
++            .map_err(js_error)?
++            .iter()
++            .position(|id| id == slide_id)
++            .ok_or_else(|| JsValue::from_str("shape preview slide is unavailable"))?;
++        let mut scope = session.slide_scope(slide_index).map_err(js_error)?;
++        let shape = find_shape_mut(&mut scope.slide.shapes, shape_id)
++            .ok_or_else(|| JsValue::from_str("shape preview target is unavailable"))?;
++        shape.x = rect.x;
++        shape.y = rect.y;
++        shape.width = rect.width;
++        shape.height = rect.height;
++        let rendered = self
++            .renderer
++            .layout_scoped_slide(session.package(), &scope)
++            .map_err(js_error)?;
++        serde_json::to_string(&rendered.display_list).map_err(js_error)
++    }
++
+     fn prune_layout_keys(&mut self, session: &pptx_edit::DeckSession) -> Result<(), JsValue> {
+         if self.layout_keys.len() > 256 {
+             let ids = session.slide_ids().map_err(js_error)?;
+@@ -485,6 +553,21 @@ impl PptxRenderer {
+     }
+ }
+ 
++fn find_shape_mut<'a>(
++    shapes: &'a mut [pptx_edit::ShapeSnapshot],
++    shape_id: &str,
++) -> Option<&'a mut pptx_edit::ShapeSnapshot> {
++    for shape in shapes {
++        if shape.id == shape_id {
++            return Some(shape);
++        }
++        if let Some(found) = find_shape_mut(&mut shape.children, shape_id) {
++            return Some(found);
++        }
++    }
++    None
++}
++
+ #[derive(Default)]
+ struct FloatBits(Vec<u64>);
+ 
+@@ -876,6 +959,95 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn shape_rect_preview_reflows_text_without_changing_session_state() {
++        let document = PptxDocument::open_collaborative(DECK, 934.0).unwrap();
++        let session = document.session();
++        let slide_id = session.slide_ids().unwrap()[0].clone();
++        let shape = session
++            .add_text_box(
++                &EditCtx::local("test"),
++                &slide_id,
++                &pptx_edit::ShapeDraft {
++                    name: "Preview text".to_owned(),
++                    rect: pptx_edit::ShapeRect {
++                        x: 100_000,
++                        y: 100_000,
++                        width: 5_000_000,
++                        height: 3_000_000,
++                    },
++                    text: "one two three four five six seven eight nine ten".to_owned(),
++                    style: TextStyle {
++                        font_family: Some("Liberation Sans".to_owned()),
++                        font_size_pt: Some(24.0),
++                        ..TextStyle::default()
++                    },
++                },
++            )
++            .unwrap();
++        let version = session.version();
++        let state_vector = session.encode_state_vector_v1();
++        let snapshot = session.snapshot().unwrap();
++        let can_undo = session.can_undo();
++        let mut renderer = PptxRenderer::new();
++        renderer
++            .register_font("Liberation Sans", false, false, FONT)
++            .unwrap();
++        let preview = |x, y, width| {
++            let json = renderer
++                .preview_shape_rect(
++                    session,
++                    &slide_id,
++                    &shape.shape_id,
++                    pptx_edit::ShapeRect {
++                        x,
++                        y,
++                        width,
++                        height: 3_000_000,
++                    },
++                )
++                .unwrap();
++            let list: pptx_render::SurfaceDisplayList = serde_json::from_str(&json).unwrap();
++            let summary = list.primitives
++                .iter()
++                .filter_map(|primitive| match primitive {
++                    pptx_render::Primitive::TextBox {
++                        shape_id: Some(id),
++                        x,
++                        y,
++                        lines,
++                        ..
++                    } if id == &shape.shape_id => Some((lines.len(), (*x, *y))),
++                    _ => None,
++                })
++                .next()
++                .unwrap();
++            (json, summary)
++        };
++        let narrow = preview(600_000, 700_000, 1_200_000);
++        let wide = preview(100_000, 100_000, 5_000_000);
++        assert!(narrow.1.0 > wide.1.0);
++        assert_ne!(narrow.1.1, wide.1.1);
++        assert_eq!(session.version(), version);
++        assert_eq!(session.encode_state_vector_v1(), state_vector);
++        assert_eq!(session.snapshot().unwrap(), snapshot);
++        assert_eq!(session.can_undo(), can_undo);
++        session
++            .set_shape_rect(
++                &EditCtx::local("commit"),
++                &slide_id,
++                &shape.shape_id,
++                &pptx_edit::ShapeRect {
++                    x: 600_000,
++                    y: 700_000,
++                    width: 1_200_000,
++                    height: 3_000_000,
++                },
++            )
++            .unwrap();
++        assert_eq!(renderer.layout_slide_json(&document, 0).unwrap(), narrow.0);
++    }
++
+     #[test]
+     fn public_layout_prunes_keys_during_slide_churn() {
+         let document = PptxDocument::open_collaborative(DECK, 913.0).unwrap();
+diff --git a/packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx b/packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx
+index f417568c1..720b93d4b 100644
+--- a/packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx
++++ b/packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx
+@@ -290,6 +290,7 @@ class FakeCommandClient implements PresentationCommandClient {
+   read = mock((_request?: PptxReadRequest): Promise<PresentationCommandReadResult> => Promise.resolve({
+     ...this.state, result: { ok: true, version: this.state.version, slides: [], stories: [] },
+   }));
++  previewShapeRect = mock(() => Promise.reject(new Error('Shape preview is not available in this fake client')));
+   save = mock((): Promise<Uint8Array> => Promise.resolve(new TextEncoder().encode(this.text)));
+   thumbnail = mock((slideId: string, knownRevision?: number): Promise<PresentationCommandThumbnailResult> =>
+     Promise.resolve({ session: this.state.session, incarnation: this.state.incarnation,
+diff --git a/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx b/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
+index b21824c9c..d8181c624 100644
+--- a/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
++++ b/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
+@@ -44,6 +44,7 @@ import { usePeerlessTextSelection } from './usePeerlessTextSelection';
+ import { PeerlessResizeHandles, PeerlessShapeOverlay } from './PeerlessShapeOverlay';
+ import { usePeerlessShapeGestures, type PeerlessShapePreviewStore } from './usePeerlessShapeGestures';
+ import { usePptxPinchZoom } from '../usePptxPinchZoom';
++import { PeerlessShapeResizePreview } from './PeerlessShapeResizePreview';
+ 
+ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPresentation | null,
+   chrome: PeerlessPresentation | null,
+@@ -127,6 +128,7 @@ function Overlays({ run, commands, inputRef, preview, insertion, onError }: { ru
+       transform: `scale(${fit.scale})`, transformOrigin: '0 0' }}>
+       <PeerlessCaret store={run.visual} />
+     </div>
++    <PeerlessShapeResizePreview run={run} preview={preview} scale={fit.scale} />
+     {!insertion && view.selection?.kind === 'object' && <PeerlessShapeOverlay selection={view.selection} preview={preview}
+       scale={fit.scale} readOnly={view.editState.readOnly} />}
+     {!insertion && edited && selected && selected.kind !== 'object' &&
+diff --git a/packages/pptx-react/src/worker/PeerlessShapeResizePreview.test.tsx b/packages/pptx-react/src/worker/PeerlessShapeResizePreview.test.tsx
+new file mode 100644
+index 000000000..b61ec8f6a
+--- /dev/null
++++ b/packages/pptx-react/src/worker/PeerlessShapeResizePreview.test.tsx
+@@ -0,0 +1,151 @@
++import { GlobalRegistrator } from '@happy-dom/global-registrator';
++import { afterAll, afterEach, expect, it, mock, spyOn } from 'bun:test';
++import type { SlideDisplayList } from '@betteroffice/pptx';
++import type { PeerlessPresentation } from './usePeerlessPresentation';
++import type { PeerlessShapePreview, PeerlessShapePreviewStore } from './usePeerlessShapeGestures';
++import { PeerlessShapeResizePreview, peerlessShapeResizePreviewPaint } from './PeerlessShapeResizePreview';
++
++const ownsDom = !GlobalRegistrator.isRegistered;
++if (ownsDom) GlobalRegistrator.register();
++const { act, cleanup, render, waitFor } = await import('@testing-library/react');
++afterEach(cleanup);
++afterAll(async () => {
++  if (ownsDom && GlobalRegistrator.isRegistered) await GlobalRegistrator.unregister();
++});
++
++function deferred<T>() {
++  let resolve!: (value: T) => void;
++  let reject!: (reason: unknown) => void;
++  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
++  return { promise, resolve, reject };
++}
++
++function request(width: number, gesture = 'gesture'): NonNullable<PeerlessShapePreview['request']> {
++  return {
++    gesture,
++    frame: { slideId: 'slide', slideRevision: 1, coversThroughSeq: 0, documentEpoch: 1, incarnation: 'deck' },
++    target: { slideId: 'slide', shapeId: 'shape', token: 'token' },
++    rect: { x: 0, y: 0, width, height: 100 },
++  };
++}
++
++const frame = (width: number): SlideDisplayList => ({
++  contractVersion: 1,
++  width,
++  height: 100,
++  primitives: [],
++});
++
++it('paints completed current-gesture previews while coalescing latest work and drops stale gestures', async () => {
++  let value: PeerlessShapePreview | null = null;
++  const listeners = new Set<() => void>();
++  const store: PeerlessShapePreviewStore = {
++    getSnapshot: () => value,
++    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
++  };
++  const set = (next: PeerlessShapePreview | null) => act(() => {
++    value = next;
++    for (const listener of listeners) listener();
++  });
++  const pending: ReturnType<typeof deferred<SlideDisplayList>>[] = [];
++  const previewShapeRect = mock((_frame: ReturnType<typeof request>['frame'],
++    _target: ReturnType<typeof request>['target'], _rect: ReturnType<typeof request>['rect']) => {
++    const next = deferred<SlideDisplayList>();
++    pending.push(next);
++    return next.promise;
++  });
++  const release = mock(() => {});
++  const run = {
++    current: true,
++    require: () => {},
++    client: { previewShapeRect },
++    images: { pin: () => ({ ready: Promise.resolve(), resolve: () => null, release }) },
++    ensureWholeFonts: async () => {},
++  } as unknown as PeerlessPresentation;
++  const context = {
++    setTransform: mock(() => {}),
++    clearRect: mock(() => {}),
++    drawImage: mock(() => {}),
++  } as unknown as CanvasRenderingContext2D;
++  const getContext = spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
++  const paint = spyOn(peerlessShapeResizePreviewPaint, 'paint').mockResolvedValue();
++  try {
++    const view = render(<PeerlessShapeResizePreview run={run} preview={store} scale={1} />);
++    set({ token: 'token', bounds: { x: 0, y: 0, width: 100, height: 100 } });
++    expect(previewShapeRect).not.toHaveBeenCalled();
++    expect(view.queryByTestId('pptx-shape-resize-preview')).toBeNull();
++
++    set({ token: 'token', bounds: { x: 0, y: 0, width: 80, height: 100 }, request: request(80) });
++    await waitFor(() => expect(previewShapeRect).toHaveBeenCalledTimes(1));
++    set({ token: 'token', bounds: { x: 0, y: 0, width: 60, height: 100 }, request: request(60) });
++    set({ token: 'token', bounds: { x: 0, y: 0, width: 40, height: 100 }, request: request(40) });
++    expect(previewShapeRect).toHaveBeenCalledTimes(1);
++    await act(async () => { pending[0]!.resolve(frame(80)); });
++    await waitFor(() => expect(previewShapeRect).toHaveBeenCalledTimes(2));
++    expect(previewShapeRect.mock.calls[1]![2]).toMatchObject({ width: 40 });
++    expect(paint).toHaveBeenCalledTimes(1);
++    expect(view.getByTestId('pptx-shape-resize-preview').style.width).toBe('80px');
++    await act(async () => { pending[1]!.resolve(frame(40)); });
++    await waitFor(() => expect(paint).toHaveBeenCalledTimes(2));
++    expect(view.getByTestId('pptx-shape-resize-preview').style.width).toBe('40px');
++
++    set({ token: 'token', bounds: { x: 0, y: 0, width: 30, height: 100 }, request: request(30, 'old') });
++    await waitFor(() => expect(previewShapeRect).toHaveBeenCalledTimes(3));
++    set({ token: 'token', bounds: { x: 0, y: 0, width: 20, height: 100 }, request: request(20, 'new') });
++    await act(async () => { pending[2]!.resolve(frame(30)); });
++    await waitFor(() => expect(previewShapeRect).toHaveBeenCalledTimes(4));
++    expect(paint).toHaveBeenCalledTimes(2);
++
++    await act(async () => { pending[3]!.reject(new Error('preview unavailable')); });
++    await waitFor(() => expect((view.getByTestId('pptx-shape-resize-preview') as HTMLCanvasElement).width).toBe(0));
++  } finally {
++    paint.mockRestore();
++    getContext.mockRestore();
++  }
++});
++
++it('uses the scale captured by each preview job and never lets an old pump paint a new job at old zoom', async () => {
++  let value: PeerlessShapePreview | null = {
++    token: 'token', bounds: { x: 0, y: 0, width: 80, height: 100 }, request: request(80),
++  };
++  const listeners = new Set<() => void>();
++  const store: PeerlessShapePreviewStore = {
++    getSnapshot: () => value,
++    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
++  };
++  const pending: ReturnType<typeof deferred<SlideDisplayList>>[] = [];
++  const previewShapeRect = mock(() => {
++    const next = deferred<SlideDisplayList>();
++    pending.push(next);
++    return next.promise;
++  });
++  const run = {
++    current: true,
++    require: () => {},
++    client: { previewShapeRect },
++    images: { pin: () => ({ ready: Promise.resolve(), resolve: () => null, release: () => {} }) },
++    ensureWholeFonts: async () => {},
++  } as unknown as PeerlessPresentation;
++  const context = {
++    setTransform: mock(() => {}),
++    clearRect: mock(() => {}),
++    drawImage: mock(() => {}),
++  } as unknown as CanvasRenderingContext2D;
++  const getContext = spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
++  const paint = spyOn(peerlessShapeResizePreviewPaint, 'paint').mockResolvedValue();
++  try {
++    const view = render(<PeerlessShapeResizePreview run={run} preview={store} scale={1} />);
++    await waitFor(() => expect(previewShapeRect).toHaveBeenCalledTimes(1));
++    view.rerender(<PeerlessShapeResizePreview run={run} preview={store} scale={2} />);
++    await act(async () => { pending[0]!.resolve(frame(80)); });
++    await waitFor(() => expect(previewShapeRect).toHaveBeenCalledTimes(2));
++    expect(paint).not.toHaveBeenCalled();
++    await act(async () => { pending[1]!.resolve(frame(80)); });
++    await waitFor(() => expect(paint).toHaveBeenCalledTimes(1));
++    expect(paint.mock.calls[0]![3]).toBe(2);
++    expect(view.getByTestId('pptx-shape-resize-preview').style.width).toBe('160px');
++  } finally {
++    paint.mockRestore();
++    getContext.mockRestore();
++  }
++});
+diff --git a/packages/pptx-react/src/worker/PeerlessShapeResizePreview.tsx b/packages/pptx-react/src/worker/PeerlessShapeResizePreview.tsx
+new file mode 100644
+index 000000000..f5f30f57e
+--- /dev/null
++++ b/packages/pptx-react/src/worker/PeerlessShapeResizePreview.tsx
+@@ -0,0 +1,105 @@
++import { paintSlide, sizeCanvasForSlide, type SlideDisplayList } from '@betteroffice/pptx';
++import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
++import type { PeerlessShapePreviewStore } from './usePeerlessShapeGestures';
++import type { PeerlessPresentation } from './usePeerlessPresentation';
++
++export const peerlessShapeResizePreviewPaint = {
++  paint: paintSlide,
++};
++
++interface PreviewJob {
++  gesture: string;
++  request: NonNullable<NonNullable<ReturnType<PeerlessShapePreviewStore['getSnapshot']>>['request']>;
++  scale: number;
++}
++
++export function PeerlessShapeResizePreview({ run, preview, scale }: {
++  run: PeerlessPresentation;
++  preview: PeerlessShapePreviewStore;
++  scale: number;
++}) {
++  const snapshot = useSyncExternalStore(preview.subscribe, preview.getSnapshot, preview.getSnapshot);
++  const request = snapshot?.request;
++  const canvas = useRef<HTMLCanvasElement>(null);
++  const activeGesture = useRef<string | null>(null);
++  const currentScale = useRef(scale);
++  currentScale.current = scale;
++  const desired = useRef<PreviewJob | null>(null);
++  const running = useRef(false);
++  const pumpRef = useRef<() => void>(() => {});
++
++  const clear = useCallback(() => {
++    const target = canvas.current;
++    if (!target) return;
++    target.width = 0;
++    target.height = 0;
++    target.style.width = '0px';
++    target.style.height = '0px';
++  }, []);
++
++  const pump = useCallback(() => {
++    if (running.current) return;
++    running.current = true;
++    void (async () => {
++      try {
++        while (desired.current) {
++          const job = desired.current;
++          desired.current = null;
++          try {
++            const frame = await run.client.previewShapeRect(
++              job.request.frame, job.request.target, job.request.rect,
++            );
++            run.require();
++            if (job.gesture !== activeGesture.current || job.scale !== currentScale.current) continue;
++            const images = run.images.pin({ displayList: frame, frame: { media: [] } });
++            try {
++              await Promise.all([images.ready, run.ensureWholeFonts?.()]);
++              if (job.gesture !== activeGesture.current || job.scale !== currentScale.current || !run.current) continue;
++              const target = canvas.current;
++              if (!target) continue;
++              const buffer = target.ownerDocument.createElement('canvas');
++              const context = buffer.getContext('2d');
++              if (!context) throw new Error('Slide canvas is unavailable');
++              const dpr = target.ownerDocument.defaultView?.devicePixelRatio ?? 1;
++              sizeCanvasForSlide(buffer, frame as SlideDisplayList, dpr, job.scale);
++              await peerlessShapeResizePreviewPaint.paint(context, frame as SlideDisplayList, dpr, job.scale,
++                { resolveImage: images.resolve });
++              if (job.gesture !== activeGesture.current || job.scale !== currentScale.current ||
++                !run.current || !canvas.current) continue;
++              sizeCanvasForSlide(canvas.current, frame as SlideDisplayList, dpr, job.scale);
++              const visible = canvas.current.getContext('2d');
++              if (!visible) throw new Error('Slide canvas is unavailable');
++              visible.setTransform(1, 0, 0, 1, 0, 0);
++              visible.clearRect(0, 0, canvas.current.width, canvas.current.height);
++              visible.drawImage(buffer, 0, 0);
++            } finally {
++              images.release();
++            }
++          } catch {
++            if (job.gesture === activeGesture.current && job.scale === currentScale.current && !desired.current) clear();
++          }
++        }
++      } finally {
++        running.current = false;
++        if (desired.current) pumpRef.current();
++      }
++    })();
++  }, [clear, run]);
++  pumpRef.current = pump;
++
++  useEffect(() => {
++    activeGesture.current = request?.gesture ?? null;
++    desired.current = request ? { gesture: request.gesture, request, scale } : null;
++    if (!request) clear();
++    else pump();
++  }, [clear, pump, request, scale]);
++
++  useEffect(() => () => {
++    activeGesture.current = null;
++    desired.current = null;
++  }, []);
++
++  if (!request) return null;
++  return <canvas ref={canvas} data-testid="pptx-shape-resize-preview" aria-hidden="true"
++    style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }} />;
++}
+diff --git a/packages/pptx-react/src/worker/PeerlessTextInput.test.tsx b/packages/pptx-react/src/worker/PeerlessTextInput.test.tsx
+index b05a840ac..d784af901 100644
+--- a/packages/pptx-react/src/worker/PeerlessTextInput.test.tsx
++++ b/packages/pptx-react/src/worker/PeerlessTextInput.test.tsx
+@@ -123,6 +123,7 @@ class FakeCommandClient implements PresentationCommandClient {
+   save = mock((): Promise<Uint8Array> => Promise.resolve(new Uint8Array()));
+   read = mock((_request?: PptxReadRequest): Promise<PresentationCommandReadResult> =>
+     Promise.reject(new Error('main-thread story read')));
++  previewShapeRect = mock(() => Promise.reject(new Error('Shape preview is not available in this fake client')));
+   thumbnail = mock((slideId: string, knownRevision?: number): Promise<PresentationCommandThumbnailResult> =>
+     Promise.resolve({ session: 'session', incarnation: 'worker', epoch: 1,
+       slideId, slideRevision: knownRevision ?? 0, status: 'unchanged' }));
+diff --git a/packages/pptx-react/src/worker/peerlessS6.test.tsx b/packages/pptx-react/src/worker/peerlessS6.test.tsx
+index 976d3b416..69f1aa8f8 100644
+--- a/packages/pptx-react/src/worker/peerlessS6.test.tsx
++++ b/packages/pptx-react/src/worker/peerlessS6.test.tsx
+@@ -3,7 +3,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
+ import { afterAll, afterEach, beforeEach, expect, mock, spyOn, test } from 'bun:test';
+ import { readFile } from 'node:fs/promises';
+ import JSZip from 'jszip';
+-import type { TextBoxPrimitive } from '@betteroffice/pptx';
++import type { SlideDisplayList, TextBoxPrimitive } from '@betteroffice/pptx';
+ import type {
+   PptxWorkerSession, PresentationCommandClient, PresentationCommandEnvelope, PresentationCommandEvents,
+   PresentationCommandMethods,
+@@ -28,6 +28,9 @@ let owner: PptxWorkerSession | undefined;
+ let paintedThroughSeq = 0;
+ let selectObjectReplyBarrier: Promise<void> | undefined;
+ let releaseSelectObjectReply: (() => void) | undefined;
++let holdPaintCommits = false;
++let heldPaintCommits: (() => void)[] = [];
++let refuseResizeCommit = false;
+ 
+ function bounded<T>(promise: Promise<T>): Promise<T> {
+   let timer: ReturnType<typeof setTimeout>;
+@@ -69,11 +72,17 @@ beforeEach(() => {
+   paintedThroughSeq = 0;
+   selectObjectReplyBarrier = undefined;
+   releaseSelectObjectReply = undefined;
++  holdPaintCommits = false;
++  heldPaintCommits = [];
++  refuseResizeCommit = false;
+   const createPainter = peerlessPainterFactories.frame;
+   const painter = spyOn(peerlessPainterFactories, 'frame').mockImplementation((canvas, options) =>
+     createPainter(canvas, { ...options, onCommit(frame, view) {
+-      options?.onCommit?.(frame, view);
+-      paintedThroughSeq = frame.frame.coversThroughSeq;
++      const commit = () => {
++        options?.onCommit?.(frame, view);
++        paintedThroughSeq = frame.frame.coversThroughSeq;
++      };
++      if (holdPaintCommits) heldPaintCommits.push(commit); else commit();
+     } }));
+   restorers.push(() => painter.mockRestore()); owner = undefined;
+   const worker = Object.getOwnPropertyDescriptor(globalThis, 'Worker');
+@@ -105,7 +114,10 @@ beforeEach(() => {
+     const command = registration.handlers.command;
+     const received = spyOn(registration.handlers, 'command').mockImplementation((context, envelope) => {
+       commands.push(envelope);
+-      const result = command(context, envelope);
++      const submitted = refuseResizeCommit && envelope.kind === 'setShapeRect'
++        ? { ...envelope, payload: { ...envelope.payload,
++          target: { ...envelope.payload.target, shapeId: 'removed-target' } } } : envelope;
++      const result = command(context, submitted as PresentationCommandEnvelope);
+       return envelope.kind === 'selectObject' && selectObjectReplyBarrier
+         ? Promise.resolve(result).then(async (reply) => {
+           await selectObjectReplyBarrier;
+@@ -275,19 +287,91 @@ test('resize_minimum', async () => {
+   expect(client.state.editState.canUndo).toBe(false);
+ });
+ 
++test('text_resize_previews_reflow_before_one_release_commit', async () => {
++  const { view, stage, point, select, box } = await open();
++  await select();
++  const original = client.previewShapeRect.bind(client);
++  let preview: SlideDisplayList | undefined;
++  const previews = spyOn(client, 'previewShapeRect').mockImplementation(async (...args) => {
++    preview = await original(...args);
++    return preview;
++  });
++  restorers.push(() => previews.mockRestore());
++  const handle = view.getByTestId('pptx-resize-e');
++  const narrow = point(box.x + 45);
++  act(() => {
++    fireEvent.pointerDown(handle, point(box.x + box.w));
++    fireEvent.pointerMove(stage, { ...narrow, buttons: 1 });
++  });
++  await waitFor(() => expect(previews).toHaveBeenCalled());
++  await waitFor(() => expect(preview).toBeDefined());
++  const previewText = preview!.primitives.find((primitive) => primitive.kind === 'textBox') as TextBoxPrimitive;
++  expect(previewText.lines.length).toBeGreaterThan(box.lines.length);
++  expect(commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(0);
++  act(() => { fireEvent.pointerUp(stage, narrow); });
++  await waitFor(() => expect(commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1));
++  await bounded(client.flush());
++  expect(commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1);
++});
++
++test('text_resize_preview_stays_visible_until_the_committed_frame_is_painted', async () => {
++  const { view, stage, point, select, box } = await open();
++  await select();
++  const handle = view.getByTestId('pptx-resize-e');
++  const narrow = point(box.x + 45);
++  act(() => {
++    fireEvent.pointerDown(handle, point(box.x + box.w));
++    fireEvent.pointerMove(stage, { ...narrow, buttons: 1 });
++  });
++  await waitFor(() => expect(view.getByTestId('pptx-shape-resize-preview')).toBeDefined());
++  holdPaintCommits = true;
++  act(() => { fireEvent.pointerUp(stage, narrow); });
++  await waitFor(() => expect(commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1));
++  await bounded(client.flush());
++  expect(heldPaintCommits).toHaveLength(1);
++  expect(paintedThroughSeq).toBeLessThan(client.state.throughSeq);
++  expect(view.getByTestId('pptx-shape-resize-preview')).toBeDefined();
++  act(() => {
++    holdPaintCommits = false;
++    for (const commit of heldPaintCommits.splice(0)) commit();
++  });
++  await waitFor(() => expect(paintedThroughSeq).toBe(client.state.throughSeq));
++  await waitFor(() => expect(view.queryByTestId('pptx-shape-resize-preview')).toBeNull());
++});
++
++test('text_resize_preview_clears_when_the_commit_is_refused', async () => {
++  const { view, stage, point, select, box } = await open();
++  await select();
++  const handle = view.getByTestId('pptx-resize-e');
++  const narrow = point(box.x + 45);
++  act(() => {
++    fireEvent.pointerDown(handle, point(box.x + box.w));
++    fireEvent.pointerMove(stage, { ...narrow, buttons: 1 });
++  });
++  await waitFor(() => expect(view.getByTestId('pptx-shape-resize-preview')).toBeDefined());
++  refuseResizeCommit = true;
++  act(() => { fireEvent.pointerUp(stage, narrow); });
++  await waitFor(() => expect(commands.filter((command) => command.kind === 'setShapeRect')).toHaveLength(1));
++  await waitFor(() => expect(view.queryByTestId('pptx-shape-resize-preview')).toBeNull());
++});
++
+ test('cancel_gesture', async () => {
+   const { stage, canvas, point, select, view } = await open();
+   await select();
+   const version = client.state.version;
+   for (const target of [canvas, view.getByTestId('pptx-resize-se')]) {
+     act(() => { fireEvent.pointerDown(target, point());
+-      fireEvent.pointerMove(stage, { ...point(point().clientX + 40), buttons: 1 });
++      fireEvent.pointerMove(stage, { ...point(point().clientX + 40), buttons: 1 }); });
++    if (target !== canvas) expect(view.getByTestId('pptx-shape-resize-preview')).toBeDefined();
++    act(() => {
+       fireEvent.keyDown(stage, { key: 'Escape' });
+       fireEvent.pointerUp(stage, point(point().clientX + 50)); });
++    expect(view.queryByTestId('pptx-shape-resize-preview')).toBeNull();
+     act(() => { fireEvent.pointerDown(target, point());
+       fireEvent.pointerMove(stage, { ...point(point().clientX + 40), buttons: 1 });
+       fireEvent.pointerCancel(stage, point());
+       fireEvent.pointerUp(stage, point(point().clientX + 50)); });
++    expect(view.queryByTestId('pptx-shape-resize-preview')).toBeNull();
+   }
+   await bounded(client.flush());
+   expect(client.state.version).toBe(version);
+diff --git a/packages/pptx-react/src/worker/peerlessViewStore.test.ts b/packages/pptx-react/src/worker/peerlessViewStore.test.ts
+index f11717355..ecf98d216 100644
+--- a/packages/pptx-react/src/worker/peerlessViewStore.test.ts
++++ b/packages/pptx-react/src/worker/peerlessViewStore.test.ts
+@@ -113,6 +113,7 @@ class FakeCommandClient implements PresentationCommandClient {
+   save = mock((): Promise<Uint8Array> => Promise.resolve(new Uint8Array()));
+   read = mock((_request?: PptxReadRequest): Promise<PresentationCommandReadResult> =>
+     Promise.reject(new Error('main-thread story read')));
++  previewShapeRect = mock(() => Promise.reject(new Error('Shape preview is not available in this fake client')));
+   thumbnail = mock((slideId: string, knownRevision?: number): Promise<PresentationCommandThumbnailResult> =>
+     Promise.resolve({ session: 'session', incarnation: 'worker', epoch: 1,
+       slideId, slideRevision: knownRevision ?? 0, status: 'unchanged' }));
+diff --git a/packages/pptx-react/src/worker/usePeerlessPresentation.ts b/packages/pptx-react/src/worker/usePeerlessPresentation.ts
+index 2b91b66fc..d342b5f45 100644
+--- a/packages/pptx-react/src/worker/usePeerlessPresentation.ts
++++ b/packages/pptx-react/src/worker/usePeerlessPresentation.ts
+@@ -60,6 +60,8 @@ export interface PeerlessPresentation {
+   getVisualSnapshot(): PeerlessVisualSnapshot | null;
+   subscribeVisual(listener: () => void): () => void;
+   require(): void;
++  /** Resolves after a visible stage frame covers the command sequence. */
++  whenPaintedThrough(throughSeq: number): Promise<void>;
+   fit(value: SlideFit): void;
+   installFont(face: PptxFontFace): Promise<void>;
+   setReadOnly(readOnly: boolean): void;
+@@ -212,6 +214,16 @@ export function usePeerlessPresentation(
+       }
+     }
+ 
++    async function whenPaintedThrough(throughSeq: number): Promise<void> {
++      while (true) {
++        require();
++        const next = changed;
++        if (firstPainted && paintedView && paintedView.confirmed === queuedFrame &&
++          paintedView.presentedThroughSeq >= throughSeq) return;
++        await next;
++      }
++    }
++
+     async function waitForMode(token: SlideFit, currentPaint: () => boolean): Promise<void> {
+       while (current() && fit === token && currentPaint() && !modeReady()) await changed;
+     }
+@@ -531,7 +543,7 @@ export function usePeerlessPresentation(
+           get inputEnabled() { return inputEnabled(); },
+           get hydrated() { return hydrated(); },
+           get failure() { return fatal; },
+-          require, setReadOnly,
++          require, whenPaintedThrough, setReadOnly,
+           setChangeObserver(enabled) {
+             if (!current() || observedChanges === enabled) return;
+             observedChanges = enabled;
+diff --git a/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts b/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts
+index a0431c42a..7541ac184 100644
+--- a/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts
++++ b/packages/pptx-react/src/worker/usePeerlessShapeGestures.ts
+@@ -1,6 +1,8 @@
+ import { useCallback, useEffect, useRef, type KeyboardEvent, type PointerEvent, type RefObject } from 'react';
+ import type { ShapeRect } from '@betteroffice/pptx';
+-import type { PresentationCommandFrameTag, PresentationCommandObjectSelection } from '@betteroffice/pptx/worker';
++import type {
++  PresentationCommandFrameTag, PresentationCommandObjectSelection, PresentationCommandObjectTarget,
++} from '@betteroffice/pptx/worker';
+ import { MIN_SHAPE_SIZE_EMU, passedDragThreshold, RESIZE_HANDLES, resizeCommitDelta, resizedBounds,
+   slidePoint, type ResizeHandle, type SlidePoint } from '../interactions';
+ import { hitConfirmedGeometry, peerlessGestureActive, peerlessInputReference, setPeerlessGestureActive, type PeerlessViewStore } from './peerlessViewStore';
+@@ -27,6 +29,12 @@ interface ShapeGesture {
+ export interface PeerlessShapePreview {
+   token: string;
+   bounds: ShapeRect;
++  request?: {
++    gesture: string;
++    frame: PresentationCommandFrameTag;
++    target: PresentationCommandObjectTarget;
++    rect: ShapeRect;
++  };
+ }
+ 
+ export interface PeerlessShapePreviewStore {
+@@ -135,7 +143,10 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+     if (gesture.current !== current || current.cancelled || !current.dragging || !current.selected ||
+       store?.getSnapshot().editState.readOnly) return;
+     const rect = peerlessGestureRect(current.selected, current.delta, current.handle);
+-    if (rect) setPreview({ token: current.selected.token, bounds: previewBounds(current.selected, rect, Boolean(current.handle)) });
++    if (rect) setPreview({ token: current.selected.token, bounds: previewBounds(current.selected, rect, Boolean(current.handle)),
++      ...(current.handle && current.selected.storyId ? { request: { gesture: current.group, frame: current.frame,
++        target: { slideId: current.selected.slideId, shapeId: current.selected.shapeId, token: current.selected.token },
++        rect } } : {}) });
+   }, [store, setPreview]);
+ 
+   const onPointerDown = useCallback((event: PointerEvent<HTMLElement>): boolean => {
+@@ -219,22 +230,37 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+     recent.current = !current.handle && !dragging ? { slideId: current.frame.slideId, shapeId: current.shapeId,
+       x: event.clientX, y: event.clientY, time: inputTime } : null;
+     current.element.releasePointerCapture?.(current.pointerId);
+-    setPreview(null);
+     if (!dragging || delta.x === 0 && delta.y === 0) {
+       outstanding.current.delete(current);
++      setPreview(null);
+       return true;
+     }
+     const commit = (object: PresentationCommandObjectSelection) => {
+       outstanding.current.delete(current);
+-      if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) return;
++      if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) {
++        setPreview(null);
++        return;
++      }
+       const rect = peerlessGestureRect(object, delta, current.handle);
+       if (!rect || Object.keys(rect).every((key) =>
+-        rect[key as keyof ShapeRect] === object.rect![key as keyof ShapeRect])) return;
++        rect[key as keyof ShapeRect] === object.rect![key as keyof ShapeRect])) {
++        setPreview(null);
++        return;
++      }
+       const payload = { frame: current.frame,
+         target: { slideId: object.slideId, shapeId: object.shapeId, token: object.token },
+         inputTime, undoGroup: current.group };
+-      void store.dispatch(current.handle ? { kind: 'setShapeRect', payload: { ...payload, rect } }
+-        : { kind: 'moveShape', payload: { ...payload, x: rect.x, y: rect.y } }).catch(() => {});
++      const retained = previewValue.current;
++      const operation = store.dispatch(current.handle ? { kind: 'setShapeRect', payload: { ...payload, rect } }
++        : { kind: 'moveShape', payload: { ...payload, x: rect.x, y: rect.y } });
++      if (!retained?.request) setPreview(null);
++      void operation.then(async (ack) => {
++        const outcome = ack.outcomes.find((entry) => entry.seq === ack.throughSeq);
++        if (!outcome?.committed) return;
++        await presentation.whenPaintedThrough(outcome.seq);
++      }).catch(() => {}).finally(() => {
++        if (previewValue.current === retained) setPreview(null);
++      });
+     };
+     if (!current.selected) {
+       if (current.handle) {
+@@ -254,7 +280,11 @@ export function usePeerlessShapeGestures(store: PeerlessViewStore | null, {
+         return true;
+       }
+       outstanding.current.delete(current);
+-      if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) return true;
++      if (current.cancelled || !presentation?.current || store.getSnapshot().editState.readOnly) {
++        setPreview(null);
++        return true;
++      }
++      setPreview(null);
+       const at = peerlessInputReference(store, true);
+       if (at?.source === 'afterSeq') {
+         void store.dispatch({ kind: 'moveShape', payload: { at, frame: current.frame,
+diff --git a/packages/pptx/src/session/commandClient.ts b/packages/pptx/src/session/commandClient.ts
+index 84ff3ebef..96251b733 100644
+--- a/packages/pptx/src/session/commandClient.ts
++++ b/packages/pptx/src/session/commandClient.ts
+@@ -411,6 +411,16 @@ async function createCommandClient(
+         return result;
+       } catch (error) { return reject(error, position.seq); }
+     },
++    async previewShapeRect(frame, target, rect) {
++      const error = unavailable();
++      if (error) throw error;
++      const bytes = await rpc.call.previewShapeRect({
++        ...identity, basis: { epoch: state.epoch, version: state.version }, frame, target, rect,
++      });
++      const retired = unavailable();
++      if (retired) throw retired;
++      return JSON.parse(new TextDecoder().decode(bytes));
++    },
+     thumbnail(slideId, knownRevision) {
+       const error = unavailable();
+       if (error) return Promise.reject(error);
+diff --git a/packages/pptx/src/session/commandFrame.ts b/packages/pptx/src/session/commandFrame.ts
+index 24942c0db..ac4b57fdb 100644
+--- a/packages/pptx/src/session/commandFrame.ts
++++ b/packages/pptx/src/session/commandFrame.ts
+@@ -1,45 +1,61 @@
+ import { transferable, type TransferResult } from '../../../../shared/office-session/protocol';
+ import { MAX_TIFF_BYTES, isTiff } from '../../../../shared/media';
+ import { graphemeBoundaries } from '../../../../shared/textSelection';
+-import type { SlideDisplayList, SlidePrimitive } from '../types';
++import type { ShapeRect, SlideDisplayList, SlidePrimitive } from '../types';
+ import {
+-  decodeTiffImage, presentationDisplayListJson, type PresentationHandle,
++  decodeTiffImage, presentationDisplayListJson, presentationShapeRectPreview, type PresentationHandle,
+ } from '../wasm/loader';
+ import type { PresentationCommandFrame } from './commandProtocol';
+ import { frameAssetIds } from './frame';
+ 
+ type FrameTags = Omit<PresentationCommandFrame, 'displayList' | 'media'>;
+ 
++/** Lays out one slide as the command frame paints it, with caret stops on grapheme boundaries. */
++export function parseCommandDisplayList(handle: PresentationHandle, slideIndex: number): SlideDisplayList {
++  const list = JSON.parse(presentationDisplayListJson(handle, slideIndex)) as SlideDisplayList;
++  normalizeCaretStops(list.primitives);
++  return list;
++}
++
++export function parseCommandShapeRectPreview(
++  handle: PresentationHandle, slideId: string, shapeId: string, rect: ShapeRect,
++): SlideDisplayList {
++  const list = presentationShapeRectPreview(handle, slideId, shapeId, rect);
++  normalizeCaretStops(list.primitives);
++  return list;
++}
++
++function normalizeCaretStops(primitives: SlidePrimitive[]): void {
++  for (const primitive of primitives) {
++    if (primitive.kind === 'textBox') {
++      const text = primitive.paragraphs.map((paragraph) => paragraph.runs.map((run) => run.text).join('')).join('\n');
++      const boundaries = [...graphemeBoundaries(text)];
++      let boundaryIndex = 0;
++      for (const line of primitive.lines) {
++        const stops = [...line.caretStops].sort((left, right) => left.position - right.position);
++        while (boundaryIndex < boundaries.length && boundaries[boundaryIndex]! < line.start) boundaryIndex++;
++        const normalized: typeof stops = [];
++        let stopIndex = 0;
++        for (let index = boundaryIndex; index < boundaries.length && boundaries[index]! <= line.end; index++) {
++          const position = boundaries[index]!;
++          while (stopIndex < stops.length && stops[stopIndex]!.position < position) stopIndex++;
++          const after = stops[stopIndex];
++          const before = stops[stopIndex - 1];
++          if (after?.position === position) normalized.push(after);
++          else if (before && after) normalized.push({ position,
++            x: before.x + (after.x - before.x) * (position - before.position) / (after.position - before.position) });
++        }
++        line.caretStops = normalized;
++      }
++    } else if (primitive.kind === 'table' || primitive.kind === 'chart') normalizeCaretStops(primitive.primitives);
++  }
++}
++
+ export function buildCommandFrame(
+   handle: PresentationHandle, tags: FrameTags, sentMedia: ReadonlySet<string>, parsed?: (list: SlideDisplayList) => void, cached?: SlideDisplayList
+ ): TransferResult<PresentationCommandFrame> {
+   const list = cached ?? JSON.parse(presentationDisplayListJson(handle, tags.slideIndex)) as SlideDisplayList;
+-  function visit(primitives: SlidePrimitive[]): void {
+-    for (const primitive of primitives) {
+-      if (primitive.kind === 'textBox') {
+-        const text = primitive.paragraphs.map((paragraph) => paragraph.runs.map((run) => run.text).join('')).join('\n');
+-        const boundaries = [...graphemeBoundaries(text)];
+-        let boundaryIndex = 0;
+-        for (const line of primitive.lines) {
+-          const stops = [...line.caretStops].sort((left, right) => left.position - right.position);
+-          while (boundaryIndex < boundaries.length && boundaries[boundaryIndex]! < line.start) boundaryIndex++;
+-          const normalized: typeof stops = [];
+-          let stopIndex = 0;
+-          for (let index = boundaryIndex; index < boundaries.length && boundaries[index]! <= line.end; index++) {
+-            const position = boundaries[index]!;
+-            while (stopIndex < stops.length && stops[stopIndex]!.position < position) stopIndex++;
+-            const after = stops[stopIndex];
+-            const before = stops[stopIndex - 1];
+-            if (after?.position === position) normalized.push(after);
+-            else if (before && after) normalized.push({ position,
+-              x: before.x + (after.x - before.x) * (position - before.position) / (after.position - before.position) });
+-          }
+-          line.caretStops = normalized;
+-        }
+-      } else if (primitive.kind === 'table' || primitive.kind === 'chart') visit(primitive.primitives);
+-    }
+-  }
+-  if (!cached) visit(list.primitives);
++  if (!cached) normalizeCaretStops(list.primitives);
+   parsed?.(list);
+   const displayList = new TextEncoder().encode(JSON.stringify(list)).buffer;
+   const media: PresentationCommandFrame['media'] = [];
+diff --git a/packages/pptx/src/session/commandHost.ts b/packages/pptx/src/session/commandHost.ts
+index 5307f351f..8f64dde7b 100644
+--- a/packages/pptx/src/session/commandHost.ts
++++ b/packages/pptx/src/session/commandHost.ts
+@@ -17,7 +17,7 @@ import {
+   presentationDeleteTextJoiningParagraphs, type PresentationCommandReadResult,
+   type PresentationHandle, type PresentationHistoryReceipt,
+ } from '../wasm/loader';
+-import { buildCommandFrame } from './commandFrame';
++import { buildCommandFrame, parseCommandShapeRectPreview } from './commandFrame';
+ import { prepareCommandOperation } from './commandOperations';
+ import { createPresentationCommandProjection,
+   type PresentationSharedAck, type PresentationSharedMethods } from './commandSharedAdapter';
+@@ -1458,6 +1458,26 @@ export function registerPresentationCommandHandlers(
+           `Command ${command.seq} has an unknown outcome: ${error instanceof Error ? error.message : String(error)}`);
+       }
+     },
++    previewShapeRect(_, request) {
++      const opened = presentation();
++      if (!matches(request)) throw new Error('Presentation shape preview identity differs');
++      const { basis, frame: tag, target, rect } = request;
++      if (!basis || basis.epoch !== documentEpoch || basis.version !== version ||
++        opened.version() !== version || !objectFrame(tag) || tag.slideId !== target?.slideId) {
++        throw new Error('stale-basis');
++      }
++      const object = transformTarget(target);
++      if (!object || object.slideId !== tag.slideId || object.shapeId !== target.shapeId) {
++        throw new Error('bad-target');
++      }
++      if (!rect || ![rect.x, rect.y, rect.width, rect.height].every(Number.isSafeInteger) ||
++        rect.width <= 0 || rect.height <= 0) throw new Error('invalid-payload');
++      if (!object.rect || !object.canResize) throw new Error('unsupported');
++      const displayList = new TextEncoder().encode(JSON.stringify(
++        parseCommandShapeRectPreview(opened, target.slideId, target.shapeId, rect),
++      )).buffer;
++      return transferable(displayList, [displayList]);
++    },
+     edit(_, command): TransferResult<PresentationSharedAck> {
+       presentation();
+       if (!isCommandEnvelope(command as unknown)) {
+@@ -1591,6 +1611,7 @@ export function registerPresentationCommandHandlers(
+     openCommandEditor: { lane: 'interactive' },
+     command: (command) => ({ lane: command.kind === 'collabPipe' ? 'collab' : 'input',
+       mutates: true, userInput: command.kind !== 'collabPipe' }),
++    previewShapeRect: { lane: 'interactive' },
+     edit: (command) => ({ lane: command.kind === 'collabPipe' ? 'collab' : 'input',
+       mutates: true, userInput: command.kind !== 'collabPipe' }),
+     checkpoint: { lane: 'interactive' },
+diff --git a/packages/pptx/src/session/commandProtocol.ts b/packages/pptx/src/session/commandProtocol.ts
+index adbff78bd..f12a27c9e 100644
+--- a/packages/pptx/src/session/commandProtocol.ts
++++ b/packages/pptx/src/session/commandProtocol.ts
+@@ -3,7 +3,7 @@ import type { PptxPresenceCursor, PptxPresencePeer } from '../collaboration/type
+ import type { SessionFailure } from '../../../../shared/office-session/types';
+ import type { PresentationHandle } from '../wasm/loader';
+ import type { PptxEditRequest, PptxEditResult, PptxReadRequest, PptxReadResult, PptxStoryTarget } from '../edits';
+-import type { DeckSnapshot, ParagraphAlignment, ShapeRect, ShapeDraft, PresetShapeDraft, ShapeReceipt, TextStyle, TextStyleSnapshot } from '../types';
++import type { DeckSnapshot, ParagraphAlignment, ShapeRect, ShapeDraft, PresetShapeDraft, ShapeReceipt, SlideDisplayList, TextStyle, TextStyleSnapshot } from '../types';
+ import type {
+   PresentationSessionOpenOptions, PresentationSlideSummary, PresentationWireFrame,
+ } from './methods';
+@@ -271,6 +271,13 @@ export interface PresentationCommandThumbnailRequest extends PresentationCommand
+   knownRevision?: number;
+ }
+ 
++export interface PresentationShapeRectPreviewRequest extends PresentationCommandIdentity {
++  basis: PresentationCommandBasis;
++  frame: PresentationCommandFrameTag;
++  target: PresentationCommandObjectTarget;
++  rect: ShapeRect;
++}
++
+ export type PresentationCommandThumbnailResult = PresentationCommandIdentity & {
+   epoch: number;
+   slideId: string;
+@@ -296,6 +303,7 @@ export interface PresentationCommandReadResult extends PresentationCommandAck {
+ export type PresentationCommandMethods = {
+   openCommandEditor(bytes: ArrayBuffer, options: PresentationCommandOpenOptions): PresentationCommandOpenResult;
+   command(envelope: PresentationCommandEnvelope): PresentationCommandAck;
++  previewShapeRect(request: PresentationShapeRectPreviewRequest): ArrayBuffer;
+   thumbnailFrame(request: PresentationCommandThumbnailRequest): PresentationCommandThumbnailResult;
+   flushCommandEditor(fence: PresentationCommandFence): PresentationCommandAck;
+   saveCommandEditor(fence: PresentationCommandFence): PresentationCommandSaveResult;
+@@ -319,6 +327,9 @@ export interface PresentationCommandClient {
+   checkpoint?(): Promise<PresentationCommandSaveResult>;
+   preparePicture?(bytes: ArrayBuffer): Promise<ArrayBuffer>;
+   read(request?: PptxReadRequest): Promise<PresentationCommandReadResult>;
++  previewShapeRect(
++    frame: PresentationCommandFrameTag, target: PresentationCommandObjectTarget, rect: ShapeRect,
++  ): Promise<SlideDisplayList>;
+   thumbnail(slideId: string, knownRevision?: number): Promise<PresentationCommandThumbnailResult>;
+   subscribe(listener: (ack: PresentationCommandAck) => void): () => void;
+   subscribeFrame(listener: (frame: PresentationCommandFrame) => void): () => void;
+@@ -331,6 +342,7 @@ export interface PresentationCommandClient {
+ export const PRESENTATION_COMMAND_METHODS = {
+   openCommandEditor: true,
+   command: true,
++  previewShapeRect: true,
+   thumbnailFrame: true,
+   flushCommandEditor: true,
+   saveCommandEditor: true,
+diff --git a/packages/pptx/src/session/commandS6.test.ts b/packages/pptx/src/session/commandS6.test.ts
+index 341e2049e..1a824d63f 100644
+--- a/packages/pptx/src/session/commandS6.test.ts
++++ b/packages/pptx/src/session/commandS6.test.ts
+@@ -5,6 +5,7 @@ import { createSessionClient } from '../../../../shared/office-session/client';
+ import { createSessionHost } from '../../../../shared/office-session/host';
+ import { createInProcessPair } from '../../../../shared/office-session/testing/inProcessTransport';
+ import * as wasm from '../wasm/loader';
++import type { ShapeRect } from '../types';
+ import { registerPresentationCommandHandlers } from './commandHost';
+ import { PRESENTATION_COMMAND_METHODS, type PresentationCommandAck, type PresentationCommandEnvelope,
+   type PresentationCommandEvents, type PresentationCommandIntent, type PresentationCommandMethods } from './commandProtocol';
+@@ -64,6 +65,12 @@ async function open(bytes?: Uint8Array) {
+         return bounded(rpc.call.command({ ...identity, seq, basis: { epoch: state.epoch, version: state.version },
+           ...(afterSeq === undefined ? {} : { afterSeq }), ...(intent as PresentationCommandIntent) } as PresentationCommandEnvelope));
+       },
++      preview(state: PresentationCommandAck, frame: NonNullable<PresentationCommandAck['frame']>,
++        target: { slideId: string; shapeId: string; token: string }, rect: ShapeRect) {
++        return bounded(rpc.call.previewShapeRect({ ...identity,
++          basis: { epoch: state.epoch, version: state.version }, frame, target, rect }));
++      },
++      read(seq: number) { return bounded(rpc.call.readEditor({ ...identity, seq })); },
+       async dispose() { try { await bounded(rpc.dispose()); } finally { opened.mockRestore(); registration.dispose(); pair.client.close(); } },
+     };
+   } catch (error) {
+@@ -172,6 +179,29 @@ test('shape_identity_selection_checks_target_and_frame', async () => {
+   } finally { await session.dispose(); }
+ });
+ 
++test('shape rectangle previews refuse stale targets and never advance command sequencing', async () => {
++  const session = await open();
++  try {
++    const selected = await session.command(session.state, 1, { kind: 'selectObject', payload: {
++      ...input, frame: session.state.frame, shapeId: session.story.shapeId,
++    } });
++    const object = selected.selection;
++    if (object?.kind !== 'object' || !selected.frame || !object.rect) throw new Error('Object selection required');
++    const target = { slideId: object.slideId, shapeId: object.shapeId, token: object.token };
++    const rect = { ...object.rect, width: Math.max(76_200, Math.floor(object.rect.width / 2)) };
++    const first = await session.preview(selected, selected.frame, target, rect);
++    const second = await session.preview(selected, selected.frame, target, rect);
++    expect(new Uint8Array(second)).toEqual(new Uint8Array(first));
++    await expect(session.preview(selected, selected.frame, { ...target, token: `${target.token}-stale` }, rect))
++      .rejects.toThrow('bad-target');
++    await expect(session.preview(selected, { ...selected.frame, incarnation: 'stale' }, target, rect))
++      .rejects.toThrow('stale-basis');
++    const after = await session.read(1);
++    expect(after.throughSeq).toBe(1);
++    expect(after.version).toBe(selected.version);
++  } finally { await session.dispose(); }
++});
++
+ test('picture aspect locks reach the worker selection and survive resize and save', async () => {
+   for (const lock of ['1', 'true', '0', 'false', null]) {
+     const zip = await JSZip.loadAsync(await deck(['alpha']));
+diff --git a/packages/pptx/src/session/commandSession.ts b/packages/pptx/src/session/commandSession.ts
+index 8f966bd01..3cfebd0dd 100644
+--- a/packages/pptx/src/session/commandSession.ts
++++ b/packages/pptx/src/session/commandSession.ts
+@@ -144,6 +144,7 @@ export function createPptxWorkerSession(
+       access: (method, ...args) => perform(() => opened.access!(method, ...args)),
+       checkpoint: () => perform(() => opened.checkpoint!()),
+       preparePicture: (bytes) => perform(() => opened.preparePicture!(bytes)),
++      previewShapeRect: (frame, target, rect) => perform(() => opened.previewShapeRect(frame, target, rect)),
+       thumbnail: (slideId, knownRevision) => perform(() => opened.thumbnail(slideId, knownRevision)),
+       subscribe: (listener) => opened.subscribe(listener),
+       subscribeFrame: (listener) => opened.subscribeFrame(listener),
+diff --git a/packages/pptx/src/wasm/generated/pptx_wasm.d.ts b/packages/pptx/src/wasm/generated/pptx_wasm.d.ts
+index bd3f2c480..5f4c786ef 100644
+--- a/packages/pptx/src/wasm/generated/pptx_wasm.d.ts
++++ b/packages/pptx/src/wasm/generated/pptx_wasm.d.ts
+@@ -1,6 +1,5 @@
+ /* tslint:disable */
+ /* eslint-disable */
+-
+ export class PptxDocument {
+     private constructor();
+     free(): void;
+@@ -164,6 +163,7 @@ export class PptxRenderer {
+      */
+     layoutSlideProfiledJson(document: PptxDocument, slide_index: number): string;
+     constructor();
++    previewShapeRectJson(document: PptxDocument, request: string): string;
+     registerFallbackFont(family: string, bold: boolean, italic: boolean, bytes: Uint8Array): number;
+     registerFont(family: string, bold: boolean, italic: boolean, bytes: Uint8Array): number;
+     saveBytes(document: PptxDocument): Uint8Array;
+@@ -319,6 +319,7 @@ export interface InitOutput {
+     readonly pptxrenderer_layoutSlideJson: (a: number, b: number, c: number) => [number, number, number, number];
+     readonly pptxrenderer_layoutSlideProfiledJson: (a: number, b: number, c: number) => [number, number, number, number];
+     readonly pptxrenderer_new: () => number;
++    readonly pptxrenderer_previewShapeRectJson: (a: number, b: number, c: any) => [number, number, number, number];
+     readonly pptxrenderer_registerFallbackFont: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+     readonly pptxrenderer_registerFont: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+     readonly pptxrenderer_saveBytes: (a: number, b: number) => [number, number, number, number];
+diff --git a/packages/pptx/src/wasm/generated/pptx_wasm_bg.wasm.d.ts b/packages/pptx/src/wasm/generated/pptx_wasm_bg.wasm.d.ts
+index 7576c909f..026c3db01 100644
+--- a/packages/pptx/src/wasm/generated/pptx_wasm_bg.wasm.d.ts
++++ b/packages/pptx/src/wasm/generated/pptx_wasm_bg.wasm.d.ts
+@@ -117,6 +117,7 @@ export const pptxrenderer_layoutProposalSlideJson: (a: number, b: number, c: num
+ export const pptxrenderer_layoutSlideJson: (a: number, b: number, c: number) => [number, number, number, number];
+ export const pptxrenderer_layoutSlideProfiledJson: (a: number, b: number, c: number) => [number, number, number, number];
+ export const pptxrenderer_new: () => number;
++export const pptxrenderer_previewShapeRectJson: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+ export const pptxrenderer_registerFallbackFont: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+ export const pptxrenderer_registerFont: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+ export const pptxrenderer_saveBytes: (a: number, b: number) => [number, number, number, number];
+diff --git a/packages/pptx/src/wasm/loader.ts b/packages/pptx/src/wasm/loader.ts
+index 54c5fa9b6..9a0e99eb2 100644
+--- a/packages/pptx/src/wasm/loader.ts
++++ b/packages/pptx/src/wasm/loader.ts
+@@ -414,6 +414,10 @@ export function replayPresentation(
+ }
+ 
+ const displayListJsonReaders = new WeakMap<PresentationHandle, (slideIndex: number) => string>();
++const shapeRectPreviewReaders = new WeakMap<
++  PresentationHandle,
++  (slideId: string, shapeId: string, rect: ShapeRect) => SlideDisplayList
++>();
+ 
+ type SessionMetadataDocument = PptxDocument & { sessionMetadataJson(): string };
+ type PresentationMetadata = {
+@@ -453,6 +457,15 @@ export function presentationDisplayListJson(handle: PresentationHandle, slideInd
+   return read(slideIndex);
+ }
+ 
++/** @internal Renders one tentative shape rectangle without changing the presentation. */
++export function presentationShapeRectPreview(
++  handle: PresentationHandle, slideId: string, shapeId: string, rect: ShapeRect,
++): SlideDisplayList {
++  const read = shapeRectPreviewReaders.get(handle);
++  if (!read) throw new Error('Presentation shape preview is unavailable');
++  return read(slideId, shapeId, rect);
++}
++
+ export function isProposalsAvailable(): boolean {
+   return typeof PptxDocument.prototype.proposeJson === 'function'
+     && typeof PptxRenderer.prototype.layoutProposalSlideJson === 'function';
+@@ -1138,6 +1151,7 @@ function openPresentationInternal(
+     dispose(): void {
+       if (disposed) return;
+       disposed = true;
++      shapeRectPreviewReaders.delete(handle);
+       faces.length = 0;
+       listeners.clear();
+       pendingUpdates.length = 0;
+@@ -1166,6 +1180,11 @@ function openPresentationInternal(
+   displayListJsonReaders.set(handle, (slideIndex) =>
+     wasmCall(() => renderer.layoutSlideJson(doc, slideIndex))
+   );
++  shapeRectPreviewReaders.set(handle, (slideId, shapeId, rect) =>
++    jsonWasmCall(() => renderer.previewShapeRectJson(
++      doc, JSON.stringify({ slideId, shapeId, ...rect }),
++    ))
++  );
+   metadataReaders.set(handle, () =>
+     jsonWasmCall(() => (doc as SessionMetadataDocument).sessionMetadataJson())
+   );
+diff --git a/shared/office-session/testing/wasmWorker.ts b/shared/office-session/testing/wasmWorker.ts
+index 33ed389a9..ecc273359 100644
+--- a/shared/office-session/testing/wasmWorker.ts
++++ b/shared/office-session/testing/wasmWorker.ts
+@@ -55,6 +55,7 @@ export async function sessionWasmFactory<Client>(clientPath: string, workerPath:
+               }
+               export const decodeTiffImage = () => { throw new Error('decodeTiffImage is not stubbed'); };
+               export const presentationDisplayListJson = () => { throw new Error('presentationDisplayListJson is not stubbed'); };
++              export const presentationShapeRectPreview = () => { throw new Error('presentationShapeRectPreview is not stubbed'); };
+               export const presentationMetadata = () => ({ slides: [], size: { width: 0, height: 0 } });
+               export const presentationStoryFormatting = () => { throw new Error('presentationStoryFormatting is not stubbed'); };
+               export const presentationDeleteTextJoiningParagraphs = () => { throw new Error('presentationDeleteTextJoiningParagraphs is not stubbed'); };

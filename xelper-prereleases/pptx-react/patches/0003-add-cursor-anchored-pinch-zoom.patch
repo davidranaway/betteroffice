@@ -1,0 +1,486 @@
+diff --git a/packages/pptx-react/src/PptxEditor.tsx b/packages/pptx-react/src/PptxEditor.tsx
+index 28851f3b2627a1f809c3c0c71ca66f89860e957f..df7be6ae46eedb6f721e79db3b0a62670ba8aab4 100644
+--- a/packages/pptx-react/src/PptxEditor.tsx
++++ b/packages/pptx-react/src/PptxEditor.tsx
+@@ -122,6 +122,7 @@ import { LEGACY_SYNC_API } from './runtimeOptions';
+ import { warnPptxEngine, type PptxEngineWarning } from './engineWarnings';
+ import { PeerlessPptxEditorLoader } from './PeerlessPptxEditorLoader';
+ import { initialPptxZoom } from './initialPptxZoom';
++import { usePptxPinchZoom } from './usePptxPinchZoom';
+ import { PresentationFailure } from './components/PresentationFailure';
+ import { notesStyles } from './components/editorChromeStyles';
+ 
+@@ -1534,6 +1535,7 @@ export function PptxEditorContent({
+     );
+   }, [model?.frame, viewport]);
+   const scale = zoom === 'fit' ? fitScale : zoom;
++  usePptxPinchZoom(canvasHostRef, canvasRef, scale, setZoom, file);
+   const worker = backend ? workerRef.current : null;
+   const workerFrame = worker?.frame(worker.active);
+   const workerNavigation = worker?.navigation;
+diff --git a/packages/pptx-react/src/usePptxPinchZoom.test.tsx b/packages/pptx-react/src/usePptxPinchZoom.test.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..cbc845b14b9c15008e8e172088830e731e2c48a3
+--- /dev/null
++++ b/packages/pptx-react/src/usePptxPinchZoom.test.tsx
+@@ -0,0 +1,279 @@
++import { GlobalRegistrator } from '@happy-dom/global-registrator';
++import { afterAll, afterEach, expect, it, mock, spyOn } from 'bun:test';
++import { useRef } from 'react';
++import { pinchZoomScale, usePptxPinchZoom } from './usePptxPinchZoom';
++
++const ownsDom = !GlobalRegistrator.isRegistered;
++if (ownsDom) GlobalRegistrator.register();
++const { act, cleanup, render } = await import('@testing-library/react');
++afterEach(cleanup);
++afterAll(async () => {
++  if (ownsDom && GlobalRegistrator.isRegistered) await GlobalRegistrator.unregister();
++});
++
++it('clamps trackpad pinch scaling to the editor zoom range', () => {
++  expect(pinchZoomScale(1, -10_000, WheelEvent.DOM_DELTA_PIXEL, 600)).toBeLessThanOrEqual(5);
++  expect(pinchZoomScale(1, 10_000, WheelEvent.DOM_DELTA_PIXEL, 600)).toBeGreaterThanOrEqual(0.1);
++  expect(pinchZoomScale(1, -10, WheelEvent.DOM_DELTA_PIXEL, 600)).toBeGreaterThan(1);
++  expect(pinchZoomScale(1, 10, WheelEvent.DOM_DELTA_PIXEL, 600)).toBeLessThan(1);
++});
++
++it('keeps the latest pinch anchor pending through an earlier canvas paint', async () => {
++  let renderedScale = 1;
++  let requestedScale = 1;
++  const setScale = mock((scale: number) => {
++    requestedScale = scale;
++  });
++  let resize = () => {};
++  const resizeObserver = globalThis.ResizeObserver;
++  globalThis.ResizeObserver = class {
++    constructor(callback: ResizeObserverCallback) {
++      resize = () => callback([], this as unknown as ResizeObserver);
++    }
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  } as unknown as typeof ResizeObserver;
++  const frame = { left: 10, top: 5, width: 280, height: 140 };
++  function Harness() {
++    const viewport = useRef<HTMLDivElement>(null);
++    const content = useRef<HTMLDivElement>(null);
++    usePptxPinchZoom(viewport, content, 1, setScale, 'presentation');
++    return <div ref={viewport} data-testid="viewport"><div ref={content} data-testid="content" /></div>;
++  }
++  const view = render(<Harness />);
++  await act(async () => {
++    await Promise.resolve();
++  });
++  const viewport = view.getByTestId('viewport');
++  const content = view.getByTestId('content');
++  Object.defineProperties(viewport, {
++    clientWidth: { configurable: true, value: 300 },
++    clientHeight: { configurable: true, value: 150 },
++  });
++  spyOn(viewport, 'getBoundingClientRect').mockImplementation(() => ({
++    left: 0,
++    top: 0,
++    width: 300,
++    height: 150,
++    right: 300,
++    bottom: 150,
++    x: 0,
++    y: 0,
++    toJSON: () => ({}),
++  }));
++  spyOn(content, 'getBoundingClientRect').mockImplementation(() => ({
++    ...frame,
++    width: frame.width * renderedScale,
++    height: frame.height * renderedScale,
++    right: frame.left + frame.width * renderedScale,
++    bottom: frame.top + frame.height * renderedScale,
++    x: frame.left,
++    y: frame.top,
++    toJSON: () => ({}),
++  }));
++  const frames: FrameRequestCallback[] = [];
++  const animation = spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback);
++    return frames.length;
++  });
++  const wheel = (ctrlKey: boolean) => {
++    const event = new Event('wheel', { bubbles: true, cancelable: true }) as WheelEvent;
++    Object.defineProperties(event, {
++      clientX: { value: 240 },
++      clientY: { value: 100 },
++      ctrlKey: { value: ctrlKey },
++      metaKey: { value: false },
++      altKey: { value: false },
++      deltaY: { value: -50 },
++      deltaMode: { value: WheelEvent.DOM_DELTA_PIXEL },
++    });
++    return event;
++  };
++  try {
++    const scroll = wheel(false);
++    viewport.dispatchEvent(scroll);
++    expect(scroll.defaultPrevented).toBe(false);
++    expect(setScale).not.toHaveBeenCalled();
++
++    const pinch = wheel(true);
++    viewport.dispatchEvent(pinch);
++    expect(pinch.defaultPrevented).toBe(true);
++    const firstScale = pinchZoomScale(1, -50, WheelEvent.DOM_DELTA_PIXEL, 150);
++    viewport.dispatchEvent(wheel(true));
++    expect(setScale).not.toHaveBeenCalled();
++    frames.shift()?.(0);
++    expect(setScale).toHaveBeenCalledTimes(1);
++    expect(viewport.scrollLeft).toBe(0);
++    expect(viewport.scrollTop).toBe(0);
++    renderedScale = firstScale;
++    resize();
++    expect(viewport.scrollLeft).toBe(0);
++    expect(viewport.scrollTop).toBe(0);
++    renderedScale = requestedScale;
++    resize();
++    expect(viewport.scrollLeft).toBeCloseTo(10 + 230 * renderedScale - 240);
++    expect(viewport.scrollTop).toBeCloseTo(5 + 95 * renderedScale - 100);
++  } finally {
++    animation.mockRestore();
++    globalThis.ResizeObserver = resizeObserver;
++  }
++});
++
++it('drops a pending pinch anchor when the presentation changes', async () => {
++  const setScale = mock(() => {});
++  let resize = () => {};
++  const resizeObserver = globalThis.ResizeObserver;
++  globalThis.ResizeObserver = class {
++    constructor(callback: ResizeObserverCallback) {
++      resize = () => callback([], this as unknown as ResizeObserver);
++    }
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  } as unknown as typeof ResizeObserver;
++  function Harness({ presentation }: { presentation: object }) {
++    const viewport = useRef<HTMLDivElement>(null);
++    const content = useRef<HTMLDivElement>(null);
++    usePptxPinchZoom(viewport, content, 1, setScale, presentation);
++    return <div ref={viewport} data-testid="viewport"><div ref={content} data-testid="content" /></div>;
++  }
++  const first = {};
++  const view = render(<Harness presentation={first} />);
++  await act(async () => {
++    await Promise.resolve();
++  });
++  const viewport = view.getByTestId('viewport');
++  const content = view.getByTestId('content');
++  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 150 });
++  let rect = { left: 10, top: 5, width: 280, height: 140 };
++  spyOn(content, 'getBoundingClientRect').mockImplementation(() => ({
++    ...rect,
++    right: rect.left + rect.width,
++    bottom: rect.top + rect.height,
++    x: rect.left,
++    y: rect.top,
++    toJSON: () => ({}),
++  }));
++  const frames: FrameRequestCallback[] = [];
++  const animation = spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback);
++    return frames.length;
++  });
++  const wheel = () => {
++    const event = new Event('wheel', { bubbles: true, cancelable: true }) as WheelEvent;
++    Object.defineProperties(event, {
++      clientX: { value: 240 },
++      clientY: { value: 100 },
++      ctrlKey: { value: true },
++      metaKey: { value: false },
++      altKey: { value: false },
++      deltaY: { value: -50 },
++      deltaMode: { value: WheelEvent.DOM_DELTA_PIXEL },
++    });
++    return event;
++  };
++  try {
++    viewport.dispatchEvent(wheel());
++    view.rerender(<Harness presentation={{}} />);
++    frames.length = 0;
++    rect = { left: 20, top: 10, width: 560, height: 280 };
++    resize();
++    expect(viewport.scrollLeft).toBe(0);
++    expect(viewport.scrollTop).toBe(0);
++
++    viewport.dispatchEvent(wheel());
++    frames.shift()?.(0);
++    const next = pinchZoomScale(1, -50, WheelEvent.DOM_DELTA_PIXEL, 150);
++    rect = { ...rect, width: 560 * next, height: 280 * next };
++    resize();
++    expect(viewport.scrollLeft).toBeCloseTo(20 + 220 * next - 240);
++    expect(viewport.scrollTop).toBeCloseTo(10 + 90 * next - 100);
++  } finally {
++    animation.mockRestore();
++    globalThis.ResizeObserver = resizeObserver;
++  }
++});
++
++it('uses the resized oversized canvas geometry to keep the cursor anchor fixed', async () => {
++  let renderedScale = 1;
++  let requestedScale = 1;
++  const setScale = mock((scale: number) => {
++    requestedScale = scale;
++  });
++  let resize = () => {};
++  const resizeObserver = globalThis.ResizeObserver;
++  globalThis.ResizeObserver = class {
++    constructor(callback: ResizeObserverCallback) {
++      resize = () => callback([], this as unknown as ResizeObserver);
++    }
++    observe() {}
++    unobserve() {}
++    disconnect() {}
++  } as unknown as typeof ResizeObserver;
++  function Harness() {
++    const viewport = useRef<HTMLDivElement>(null);
++    const content = useRef<HTMLDivElement>(null);
++    usePptxPinchZoom(viewport, content, 1, setScale, 'presentation');
++    return <div ref={viewport} data-testid="viewport"><div ref={content} data-testid="content" /></div>;
++  }
++  const view = render(<Harness />);
++  await act(async () => {
++    await Promise.resolve();
++  });
++  const viewport = view.getByTestId('viewport');
++  const content = view.getByTestId('content');
++  Object.defineProperties(viewport, {
++    clientWidth: { configurable: true, value: 300 },
++    clientHeight: { configurable: true, value: 150 },
++  });
++  spyOn(content, 'getBoundingClientRect').mockImplementation(() => {
++    const width = 280 * renderedScale;
++    const height = 140 * renderedScale;
++    const left = 100 + (300 - width) / 2 - viewport.scrollLeft;
++    const top = 50 + (150 - height) / 2 - viewport.scrollTop;
++    return {
++      left,
++      top,
++      width,
++      height,
++      right: left + width,
++      bottom: top + height,
++      x: left,
++      y: top,
++      toJSON: () => ({}),
++    };
++  });
++  const frames: FrameRequestCallback[] = [];
++  const animation = spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
++    frames.push(callback);
++    return frames.length;
++  });
++  const event = new Event('wheel', { bubbles: true, cancelable: true }) as WheelEvent;
++  Object.defineProperties(event, {
++    clientX: { value: 340 },
++    clientY: { value: 145 },
++    ctrlKey: { value: true },
++    metaKey: { value: false },
++    altKey: { value: false },
++    deltaY: { value: -50 },
++    deltaMode: { value: WheelEvent.DOM_DELTA_PIXEL },
++  });
++  try {
++    viewport.dispatchEvent(event);
++    frames.shift()?.(0);
++    renderedScale = requestedScale;
++    resize();
++
++    const resized = content.getBoundingClientRect();
++    const anchorX = (340 - 110) / 280;
++    const anchorY = (145 - 55) / 140;
++    expect(resized.left).toBeLessThan(100);
++    expect(resized.top).toBeLessThan(50);
++    expect(resized.left + anchorX * resized.width).toBeCloseTo(340);
++    expect(resized.top + anchorY * resized.height).toBeCloseTo(145);
++  } finally {
++    animation.mockRestore();
++    globalThis.ResizeObserver = resizeObserver;
++  }
++});
+diff --git a/packages/pptx-react/src/usePptxPinchZoom.ts b/packages/pptx-react/src/usePptxPinchZoom.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..59cc33ef8bb426e134c9dc9792dcfcd87312dbdd
+--- /dev/null
++++ b/packages/pptx-react/src/usePptxPinchZoom.ts
+@@ -0,0 +1,144 @@
++import { useEffect, useRef } from 'react';
++import type { RefObject } from 'react';
++import { MAX_ZOOM, MIN_ZOOM } from './commands/evaluate';
++
++const MAX_WHEEL_DELTA = 50;
++const WHEEL_ZOOM_SENSITIVITY = 0.005;
++
++export function pinchZoomScale(
++  scale: number,
++  deltaY: number,
++  deltaMode: number,
++  viewportHeight: number
++): number {
++  const unit = deltaMode === WheelEvent.DOM_DELTA_LINE
++    ? 16
++    : deltaMode === WheelEvent.DOM_DELTA_PAGE
++      ? viewportHeight
++      : 1;
++  const delta = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaY * unit));
++  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale * Math.exp(-delta * WHEEL_ZOOM_SENSITIVITY)));
++}
++
++/**
++ * Converts the browser's Ctrl+wheel trackpad pinch gesture into editor zoom while
++ * keeping the point below the gesture stationary in the scroll viewport.
++ */
++export function usePptxPinchZoom(
++  viewportRef: RefObject<HTMLElement | null>,
++  contentRef: RefObject<HTMLElement | null>,
++  scale: number,
++  setScale: (scale: number) => void,
++  presentation: unknown
++) {
++  const scaleRef = useRef(scale);
++  const setScaleRef = useRef(setScale);
++  const commitAnimationRef = useRef<number | null>(null);
++  const anchorAnimationRef = useRef<number | null>(null);
++  const pendingAnchorRef = useRef<{
++    width: number;
++    height: number;
++    baseWidth: number;
++    baseHeight: number;
++    anchorX: number;
++    anchorY: number;
++    clientX: number;
++    clientY: number;
++  } | null>(null);
++  scaleRef.current = scale;
++  setScaleRef.current = setScale;
++
++  useEffect(() => {
++    const viewport = viewportRef.current;
++    if (!viewport) return;
++    const view = viewport.ownerDocument.defaultView;
++    const applyAnchor = () => {
++      const pending = pendingAnchorRef.current;
++      const content = contentRef.current;
++      if (!pending || !content) return;
++      const after = content.getBoundingClientRect();
++      if (
++        Math.abs(after.width - pending.width) >= 0.5 ||
++        Math.abs(after.height - pending.height) >= 0.5
++      ) {
++        return;
++      }
++      pendingAnchorRef.current = null;
++      viewport.scrollLeft += after.left + pending.anchorX * after.width - pending.clientX;
++      viewport.scrollTop += after.top + pending.anchorY * after.height - pending.clientY;
++      observer?.disconnect();
++    };
++    const observer =
++      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(applyAnchor);
++    const onWheel = (event: WheelEvent) => {
++      if (!event.ctrlKey || event.metaKey || event.altKey || !event.cancelable) return;
++      const content = contentRef.current;
++      if (!content) return;
++      event.preventDefault();
++      const next = pinchZoomScale(
++        scaleRef.current,
++        event.deltaY,
++        event.deltaMode,
++        viewport.clientHeight
++      );
++      if (next === scaleRef.current) return;
++      const before = content.getBoundingClientRect();
++      const currentScale = scaleRef.current;
++      const pending = pendingAnchorRef.current;
++      const baseWidth = pending?.baseWidth ??
++        (currentScale > 0 ? before.width / currentScale : before.width);
++      const baseHeight = pending?.baseHeight ??
++        (currentScale > 0 ? before.height / currentScale : before.height);
++      const anchorX = pending?.anchorX ??
++        (before.width > 0 ? (event.clientX - before.left) / before.width : 0.5);
++      const anchorY = pending?.anchorY ??
++        (before.height > 0 ? (event.clientY - before.top) / before.height : 0.5);
++      const nextWidth = baseWidth * next;
++      const nextHeight = baseHeight * next;
++      pendingAnchorRef.current = {
++        width: nextWidth,
++        height: nextHeight,
++        baseWidth,
++        baseHeight,
++        anchorX,
++        anchorY,
++        clientX: event.clientX,
++        clientY: event.clientY,
++      };
++      observer?.disconnect();
++      observer?.observe(content);
++      scaleRef.current = next;
++      if (!view) {
++        setScaleRef.current(next);
++        return;
++      }
++      if (commitAnimationRef.current === null) {
++        commitAnimationRef.current = view.requestAnimationFrame(() => {
++          commitAnimationRef.current = null;
++          setScaleRef.current(scaleRef.current);
++          if (anchorAnimationRef.current !== null) {
++            view.cancelAnimationFrame(anchorAnimationRef.current);
++          }
++          anchorAnimationRef.current = view.requestAnimationFrame(() => {
++            anchorAnimationRef.current = null;
++            applyAnchor();
++          });
++        });
++      }
++    };
++    viewport.addEventListener('wheel', onWheel, { passive: false });
++    return () => {
++      viewport.removeEventListener('wheel', onWheel);
++      observer?.disconnect();
++      pendingAnchorRef.current = null;
++      if (view && commitAnimationRef.current !== null) {
++        view.cancelAnimationFrame(commitAnimationRef.current);
++        commitAnimationRef.current = null;
++      }
++      if (view && anchorAnimationRef.current !== null) {
++        view.cancelAnimationFrame(anchorAnimationRef.current);
++        anchorAnimationRef.current = null;
++      }
++    };
++  }, [contentRef, presentation, viewportRef]);
++}
+diff --git a/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx b/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
+index b91265e199b042d9a9fd6ec4552e7ef543f40bba..b21824c9c2e2f29a794e2dc3c079d18105a936ff 100644
+--- a/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
++++ b/packages/pptx-react/src/worker/PeerlessPptxSurface.tsx
+@@ -43,6 +43,7 @@ import { createPeerlessEditorApi, type PptxAsyncEditorApi } from './createPeerle
+ import { usePeerlessTextSelection } from './usePeerlessTextSelection';
+ import { PeerlessResizeHandles, PeerlessShapeOverlay } from './PeerlessShapeOverlay';
+ import { usePeerlessShapeGestures, type PeerlessShapePreviewStore } from './usePeerlessShapeGestures';
++import { usePptxPinchZoom } from '../usePptxPinchZoom';
+ 
+ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPresentation | null,
+   chrome: PeerlessPresentation | null,
+@@ -92,7 +93,7 @@ function useStageFit(stage: RefObject<HTMLDivElement | null>, run: PeerlessPrese
+     return value !== null && owner.current === run && value.run === run && run.current && Boolean(value.token.scale) &&
+       value.token.generation === token.generation;
+   }, []);
+-  return { previewFit, current };
++  return { fit, previewFit, current };
+ }
+ 
+ function Overlays({ run, commands, inputRef, preview, insertion, onError }: { run: PeerlessPresentation; commands: PptxCommandStore; inputRef: RefObject<HTMLTextAreaElement | null>; preview: PeerlessShapePreviewStore; insertion: ShapeRect | null; onError(error: Error): void }) {
+@@ -173,7 +174,8 @@ export function PeerlessPptxSurface(props: PptxAsyncEditorInternalProps) {
+   }, [props.file]);
+   const toolbarVisible = showToolbar !== false && toolbar !== null;
+   const editorToolbar = toolbar !== undefined || !props.readOnly;
+-  const { previewFit, current } = useStageFit(stage, pending ?? presentation, chrome, toolbar, toolbarVisible, zoom);
++  const { fit, previewFit, current } = useStageFit(stage, pending ?? presentation, chrome, toolbar, toolbarVisible, zoom);
++  usePptxPinchZoom(stage, canvas, fit?.scale ?? null, setZoom, props.file);
+   const callbacks = useRef(props);
+   callbacks.current = props;
+   const api = useRef<PptxAsyncEditorApi | null>(null);

@@ -12,7 +12,7 @@ afterEach(() => {
   }
 });
 
-test('stages the reviewed personal-scope package without mutating official source', () => {
+test('stages the reviewed React package with the core npm alias without mutating official source', () => {
   const directory = mkdtempSync(join(tmpdir(), 'betteroffice-pptx-react-channel-'));
   temporaryDirectories.push(directory);
   const source = join(directory, 'source');
@@ -29,6 +29,7 @@ test('stages the reviewed personal-scope package without mutating official sourc
     },
     files: ['dist'],
     dependencies: {
+      '@betteroffice/fonts': 'workspace:^',
       '@betteroffice/pptx': 'workspace:*',
       '@betteroffice/pptx-i18n': 'workspace:*',
     },
@@ -48,14 +49,16 @@ test('stages the reviewed personal-scope package without mutating official sourc
   writeFileSync(join(source, 'dist', 'index.js'), 'export const editor = true;\n');
   writeFileSync(join(source, 'dist', 'index.d.ts'), 'export declare const editor: true;\n');
   writeFileSync(join(source, 'dist', 'chunk-ABC.js'), 'export {};\n');
+  writeFileSync(join(source, 'LICENSE'), 'Apache License 2.0\n');
 
-  const result = stagePackage({ channel: loadChannel(), sourcePackage: source, stage });
+  const result = stagePackage({ channel: loadChannel(), packageKey: 'react', sourcePackage: source, stage });
 
   expect(result.manifest).toMatchObject({
     name: '@davidranaway/betteroffice-pptx-react',
-    version: '0.5.1-xelper.4',
+    version: '0.5.1-xelper.5',
     dependencies: {
-      '@betteroffice/pptx': '0.5.1',
+      '@betteroffice/fonts': '0.5.1',
+      '@betteroffice/pptx': 'npm:@davidranaway/betteroffice-pptx@0.5.1-xelper.1',
       '@betteroffice/pptx-i18n': '0.5.1',
     },
     license: 'Apache-2.0',
@@ -66,30 +69,44 @@ test('stages the reviewed personal-scope package without mutating official sourc
   });
   expect(result.manifest.peerDependencies).toEqual(sourceManifest.peerDependencies);
   expect(result.manifest.dependencies).toEqual({
-    '@betteroffice/pptx': '0.5.1',
+    '@betteroffice/fonts': '0.5.1',
+    '@betteroffice/pptx': 'npm:@davidranaway/betteroffice-pptx@0.5.1-xelper.1',
     '@betteroffice/pptx-i18n': '0.5.1',
   });
   expect(result.files).toEqual([
+    'LICENSE',
     'XELPER-PROVENANCE.json',
     'dist/chunk-ABC.js',
     'dist/index.d.ts',
     'dist/index.js',
     'package.json',
   ]);
+  expect(result.provenance.source).toEqual({
+    repository: 'https://github.com/openooxml/betteroffice.git',
+    tag: '@betteroffice/pptx-react@0.5.1',
+    commit: '4e982c3aea0065578604c3fe7727938533888f66',
+  });
+  expect(result.provenance.backports[0]).toMatchObject({
+    upstreamPullRequest: 2698,
+    behavior: 'Full slide-strip keyboard navigation and focus retention',
+    reviewedCommits: [
+      '541770e783cd972527b0f7e4592965dabcb9229e',
+      '107bba5de974ac18498ac7beac9b0e72cdcd935e',
+      'aeb5b2c6591efa80906d84d55ea8e14aaf344a4f',
+    ],
+  });
+  expect(result.provenance.compatibilityAdaptations).toEqual([expect.objectContaining({
+    sourceHunk: expect.objectContaining({
+      commit: 'fe7a97514f14c1d6bfa0be1a69b1364403e173b0',
+      path: 'packages/pptx/src/session/commandHost.ts',
+      lines: [1572, 1595, 1596],
+      sha256: '0108c75a9764d9dcf2e48ffec768037c954682a400b42a848934d6b1200b116a',
+    }),
+    testAdaptation: expect.objectContaining({
+      path: 'packages/pptx-react/src/worker/peerlessS6.test.tsx',
+    }),
+  })]);
   expect(result.provenance).toMatchObject({
-    source: {
-      repository: 'https://github.com/openooxml/betteroffice.git',
-      tag: '@betteroffice/pptx-react@0.5.1',
-      commit: '4e982c3aea0065578604c3fe7727938533888f66',
-    },
-    backports: [{
-      upstreamPullRequest: 2698,
-      behavior: 'Full slide-strip keyboard navigation and focus retention',
-      reviewedCommits: [
-        '541770e783cd972527b0f7e4592965dabcb9229e',
-        'aeb5b2c6591efa80906d84d55ea8e14aaf344a4f',
-      ],
-    }],
     buildEnvironment: {
       securityPatches: [{
         advisory: 'GHSA-3f7j-7jwc-fxfj',
@@ -102,4 +119,59 @@ test('stages the reviewed personal-scope package without mutating official sourc
   });
   expect(readFileSync(join(source, 'package.json'), 'utf8')).toBe(manifestBytes);
   expect(readFileSync(join(source, 'dist', 'index.js'), 'utf8')).toBe('export const editor = true;\n');
+});
+
+test('stages the reviewed core package with its exact official dependency contract', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'betteroffice-pptx-core-channel-'));
+  temporaryDirectories.push(directory);
+  const source = join(directory, 'source');
+  const stage = join(directory, 'stage');
+  mkdirSync(join(source, 'dist'), { recursive: true });
+  const sourceManifest = {
+    name: '@betteroffice/pptx',
+    version: '0.5.1',
+    type: 'module',
+    main: './dist/index.js',
+    types: './dist/index.d.ts',
+    files: ['dist', 'LICENSES'],
+    dependencies: { '@betteroffice/fonts': 'workspace:^' },
+    license: 'Apache-2.0',
+    repository: {
+      type: 'git',
+      url: 'https://github.com/openooxml/betteroffice.git',
+      directory: 'packages/pptx',
+    },
+  };
+  const manifestBytes = `${JSON.stringify(sourceManifest, null, 2)}\n`;
+  writeFileSync(join(source, 'package.json'), manifestBytes);
+  writeFileSync(join(source, 'LICENSE'), 'Apache License 2.0\n');
+  writeFileSync(join(source, 'dist', 'index.js'), 'export const core = true;\n');
+  writeFileSync(join(source, 'dist', 'index.d.ts'), 'export declare const core: true;\n');
+  writeFileSync(join(source, 'dist', 'pptx_wasm_bg.wasm'), 'wasm');
+
+  const result = stagePackage({ channel: loadChannel(), packageKey: 'core', sourcePackage: source, stage });
+
+  expect(result.manifest).toMatchObject({
+    name: '@davidranaway/betteroffice-pptx',
+    version: '0.5.1-xelper.1',
+    dependencies: { '@betteroffice/fonts': '0.5.1' },
+    license: 'Apache-2.0',
+    repository: {
+      url: 'https://github.com/davidranaway/betteroffice.git',
+      directory: 'packages/pptx',
+    },
+  });
+  expect(result.files).toEqual([
+    'LICENSE',
+    'XELPER-PROVENANCE.json',
+    'dist/index.d.ts',
+    'dist/index.js',
+    'dist/pptx_wasm_bg.wasm',
+    'package.json',
+  ]);
+  expect(result.provenance.releaseSet).toEqual({
+    core: { name: '@davidranaway/betteroffice-pptx', version: '0.5.1-xelper.1' },
+    react: { name: '@davidranaway/betteroffice-pptx-react', version: '0.5.1-xelper.5' },
+  });
+  expect(readFileSync(join(source, 'package.json'), 'utf8')).toBe(manifestBytes);
 });

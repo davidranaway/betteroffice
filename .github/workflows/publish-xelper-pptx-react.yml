@@ -1,4 +1,4 @@
-name: Publish xelper pptx-react prerelease
+name: Publish xelper PPTX prerelease set
 
 on:
   push:
@@ -14,7 +14,7 @@ defaults:
 
 jobs:
   publish:
-    name: Publish xelper pptx-react
+    name: Publish xelper PPTX release set
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -67,17 +67,41 @@ jobs:
             exit 1
           fi
 
-      - name: Require the initial manual publish
+      - name: Require bootstrapped Trusted Publishing packages
         run: |
+          if ! npm view '@davidranaway/betteroffice-pptx' name >/dev/null 2>&1; then
+            echo "::error::The core package is not bootstrapped. Complete the documented bootstrap and Trusted Publisher setup before pushing the release tag."
+            exit 1
+          fi
           if ! npm view '@davidranaway/betteroffice-pptx-react' version >/dev/null 2>&1; then
-            echo "::error::The package does not exist on npm. Complete the documented first manual publish, then configure Trusted Publishing before pushing a release tag."
+            echo "::error::The React package no longer resolves on npm."
             exit 1
           fi
 
-      - name: Publish with provenance
+      - name: Require both immutable registry targets to be unused
+        run: |
+          for target in \
+            '@davidranaway/betteroffice-pptx@0.5.1-xelper.1' \
+            '@davidranaway/betteroffice-pptx-react@0.5.1-xelper.5'
+          do
+            if npm view "$target" version >/dev/null 2>&1; then
+              echo "::error::Registry target already exists: $target"
+              exit 1
+            fi
+          done
+
+      - name: Publish core first with provenance
         env:
           NPM_CONFIG_PROVENANCE: "true"
         run: |
-          tarball=$(find xelper-prereleases/pptx-react/artifacts -maxdepth 1 -type f -name '*.tgz' -print)
-          test "$(printf '%s\n' "$tarball" | sed '/^$/d' | wc -l | tr -d ' ')" = 1
-          npm publish "$tarball" --access public --tag xelper
+          tarball=$(node -e "const p=require('./xelper-prereleases/pptx-react/artifacts/provenance.json'); process.stdout.write('xelper-prereleases/pptx-react/'+p.tarballs.core.file)")
+          test -f "$tarball"
+          npm publish "$tarball" --access public --tag xelper --provenance
+
+      - name: Publish React second with provenance
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: |
+          tarball=$(node -e "const p=require('./xelper-prereleases/pptx-react/artifacts/provenance.json'); process.stdout.write('xelper-prereleases/pptx-react/'+p.tarballs.react.file)")
+          test -f "$tarball"
+          npm publish "$tarball" --access public --tag xelper --provenance

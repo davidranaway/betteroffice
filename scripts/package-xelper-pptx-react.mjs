@@ -20,10 +20,10 @@ const channelDirectory = join(root, 'xelper-prereleases', 'pptx-react');
 const channelPath = join(channelDirectory, 'channel.json');
 const workDirectory = join(channelDirectory, '.work');
 const sourceDirectory = join(workDirectory, 'source');
-const stageDirectory = join(workDirectory, 'package');
+const stageDirectory = join(workDirectory, 'packages');
 const artifactsDirectory = join(channelDirectory, 'artifacts');
-const sourcePackageDirectory = join(sourceDirectory, 'packages', 'pptx-react');
 const packageManagerVersion = '1.4.3';
+process.env.PATH = `${dirname(process.execPath)}:${process.env.PATH ?? ''}`;
 
 function fail(message) {
   throw new Error(message);
@@ -35,6 +35,10 @@ function readJson(path) {
 
 function sha256(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function sha256Text(value) {
+  return createHash('sha256').update(value).digest('hex');
 }
 
 function run(command, args, options = {}) {
@@ -75,62 +79,85 @@ function listFiles(directory, prefix = '') {
 
 export function loadChannel() {
   const channel = readJson(channelPath);
-  const expected = {
-    schemaVersion: 1,
-    name: '@davidranaway/betteroffice-pptx-react',
-    version: '0.5.1-xelper.4',
-    repository: 'https://github.com/davidranaway/betteroffice.git',
-    distTag: 'xelper',
-    tag: '@betteroffice/pptx-react@0.5.1',
-    commit: '4e982c3aea0065578604c3fe7727938533888f66',
-    reviewedCommits: [
-      '541770e783cd972527b0f7e4592965dabcb9229e',
-      'aeb5b2c6591efa80906d84d55ea8e14aaf344a4f',
-    ],
-    buildAdvisory: 'GHSA-3f7j-7jwc-fxfj',
-    buildPackage: 'systeminformation',
-    buildVersion: '5.33.16',
-    buildLicense: 'MIT',
-  };
-  if (channel.schemaVersion !== expected.schemaVersion ||
-      channel.package?.name !== expected.name ||
-      channel.package?.version !== expected.version ||
-      channel.package?.repository !== expected.repository ||
-      channel.package?.distTag !== expected.distTag ||
-      channel.source?.tag !== expected.tag ||
-      channel.source?.commit !== expected.commit ||
-      channel.backports?.length !== 1 ||
-      channel.backports[0]?.behavior !== 'Full slide-strip keyboard navigation and focus retention' ||
-      JSON.stringify(channel.backports[0]?.reviewedCommits) !== JSON.stringify(expected.reviewedCommits) ||
-      channel.buildEnvironment?.patches?.length !== 1 ||
-      channel.buildEnvironment.patches[0]?.advisory !== expected.buildAdvisory ||
-      channel.buildEnvironment.patches[0]?.package !== expected.buildPackage ||
-      channel.buildEnvironment.patches[0]?.version !== expected.buildVersion ||
-      channel.buildEnvironment.patches[0]?.license !== expected.buildLicense) {
-    fail('channel.json does not describe the reviewed, pptx-react-only 0.5.1 channel.');
+  const core = channel.packages?.core;
+  const react = channel.packages?.react;
+  const compatibility = channel.compatibilityAdaptations?.[0];
+  if (channel.schemaVersion !== 2 ||
+      channel.releaseTag !== '@davidranaway/betteroffice-pptx-react@0.5.1-xelper.5' ||
+      channel.repository !== 'https://github.com/davidranaway/betteroffice.git' ||
+      channel.distTag !== 'xelper' ||
+      channel.source?.tag !== '@betteroffice/pptx-react@0.5.1' ||
+      channel.source?.commit !== '4e982c3aea0065578604c3fe7727938533888f66' ||
+      core?.name !== '@davidranaway/betteroffice-pptx' ||
+      core?.version !== '0.5.1-xelper.1' ||
+      react?.name !== '@davidranaway/betteroffice-pptx-react' ||
+      react?.version !== '0.5.1-xelper.5' ||
+      channel.backports?.map(({ upstreamPullRequest }) => upstreamPullRequest).join(',') !==
+        '2698,2731,2732,2733' ||
+      channel.compatibilityAdaptations?.length !== 1 ||
+      compatibility.sourceHunk?.commit !== 'fe7a97514f14c1d6bfa0be1a69b1364403e173b0' ||
+      compatibility.sourceHunk?.path !== 'packages/pptx/src/session/commandHost.ts' ||
+      JSON.stringify(compatibility.sourceHunk?.lines) !== JSON.stringify([1572, 1595, 1596]) ||
+      compatibility.sourceHunk?.sha256 !==
+        '0108c75a9764d9dcf2e48ffec768037c954682a400b42a848934d6b1200b116a' ||
+      compatibility.testAdaptation?.path !==
+        'packages/pptx-react/src/worker/peerlessS6.test.tsx') {
+    fail('channel.json does not describe the reviewed dual-package 0.5.1 release set.');
   }
-  if (JSON.stringify(channel.dependencies) !== JSON.stringify({
-    '@betteroffice/pptx': '0.5.1',
-    '@betteroffice/pptx-i18n': '0.5.1',
-  })) {
-    fail('channel.json must pin only the two official pptx-react 0.5.1 runtime dependencies.');
+  if (JSON.stringify(core.dependencies) !== JSON.stringify({ '@betteroffice/fonts': '0.5.1' }) ||
+      JSON.stringify(react.dependencies) !== JSON.stringify({
+        '@betteroffice/fonts': '0.5.1',
+        '@betteroffice/pptx': 'npm:@davidranaway/betteroffice-pptx@0.5.1-xelper.1',
+        '@betteroffice/pptx-i18n': '0.5.1',
+      })) {
+    fail('channel.json does not preserve the exact 0.5.1 dependency contract and core alias.');
+  }
+  const securityPatch = channel.buildEnvironment?.patches?.[0];
+  if (channel.buildEnvironment?.patches?.length !== 1 ||
+      securityPatch.advisory !== 'GHSA-3f7j-7jwc-fxfj' ||
+      securityPatch.package !== 'systeminformation' ||
+      securityPatch.version !== '5.33.16' ||
+      securityPatch.license !== 'MIT') {
+    fail('channel.json does not retain the reviewed systeminformation security patch.');
   }
   return channel;
 }
 
-function provenanceFor(channel) {
+function provenanceFor(channel, packageKey) {
+  const packageDefinition = channel.packages[packageKey];
   return {
-    schemaVersion: 1,
-    package: channel.package,
-    source: {
-      repository: 'https://github.com/openooxml/betteroffice.git',
-      tag: channel.source.tag,
-      commit: channel.source.commit,
+    schemaVersion: 2,
+    releaseTag: channel.releaseTag,
+    package: {
+      name: packageDefinition.name,
+      version: packageDefinition.version,
+      repository: channel.repository,
+      distTag: channel.distTag,
     },
-    backports: channel.backports.map(({ upstreamPullRequest, behavior, reviewedCommits, patch, sha256: digest }) => ({
+    source: channel.source,
+    releaseSet: Object.fromEntries(Object.entries(channel.packages)
+      .map(([key, value]) => [key, { name: value.name, version: value.version }])),
+    backports: channel.backports.map(({
+      upstreamPullRequest, headRef, headCommit, mergeBase, behavior, reviewedCommits,
+      adaptation, excludedReviewedPaths, patch, sha256: digest,
+    }) => ({
       upstreamPullRequest,
+      headRef,
+      headCommit,
+      mergeBase,
       behavior,
       reviewedCommits,
+      ...(adaptation ? { adaptation } : {}),
+      excludedReviewedPaths,
+      patch,
+      sha256: digest,
+    })),
+    compatibilityAdaptations: channel.compatibilityAdaptations.map(({
+      behavior, sourceHunk, testAdaptation, patch, sha256: digest,
+    }) => ({
+      behavior,
+      sourceHunk,
+      testAdaptation,
       patch,
       sha256: digest,
     })),
@@ -149,22 +176,29 @@ function provenanceFor(channel) {
   };
 }
 
-export function stagePackage({ channel, sourcePackage = sourcePackageDirectory, stage = stageDirectory }) {
+export function stagePackage({ channel, packageKey, sourcePackage, stage }) {
+  const definition = channel.packages[packageKey];
+  sourcePackage ??= join(sourceDirectory, definition.sourceDirectory);
+  stage ??= join(stageDirectory, packageKey);
   const sourceManifestPath = join(sourcePackage, 'package.json');
   const sourceManifestBytes = readFileSync(sourceManifestPath, 'utf8');
   const sourceManifest = JSON.parse(sourceManifestBytes);
-  if (sourceManifest.name !== '@betteroffice/pptx-react' || sourceManifest.version !== '0.5.1') {
-    fail('The source package is not official @betteroffice/pptx-react@0.5.1.');
+  if (sourceManifest.name !== definition.sourceName || sourceManifest.version !== '0.5.1') {
+    fail(`The source package is not official ${definition.sourceName}@0.5.1.`);
   }
-  if (JSON.stringify(sourceManifest.dependencies) !== JSON.stringify({
-    '@betteroffice/pptx': 'workspace:*',
-    '@betteroffice/pptx-i18n': 'workspace:*',
-  })) {
+  const expectedSourceDependencies = packageKey === 'core'
+    ? { '@betteroffice/fonts': 'workspace:^' }
+    : {
+        '@betteroffice/fonts': 'workspace:^',
+        '@betteroffice/pptx': 'workspace:*',
+        '@betteroffice/pptx-i18n': 'workspace:*',
+      };
+  if (JSON.stringify(sourceManifest.dependencies) !== JSON.stringify(expectedSourceDependencies)) {
     fail('The official source manifest has unexpected runtime dependencies.');
   }
   if (sourceManifest.license !== 'Apache-2.0' ||
       sourceManifest.repository?.url !== 'https://github.com/openooxml/betteroffice.git' ||
-      sourceManifest.repository?.directory !== 'packages/pptx-react') {
+      sourceManifest.repository?.directory !== definition.sourceDirectory) {
     fail('The official package license or repository provenance is unexpected.');
   }
   if (!existsSync(join(sourcePackage, 'dist', 'index.js')) ||
@@ -175,37 +209,38 @@ export function stagePackage({ channel, sourcePackage = sourcePackageDirectory, 
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true });
   cpSync(join(sourcePackage, 'dist'), join(stage, 'dist'), { recursive: true, dereference: false });
+  cpSync(join(sourcePackage, 'LICENSE'), join(stage, 'LICENSE'), { dereference: false });
 
   const stagedManifest = structuredClone(sourceManifest);
-  stagedManifest.name = channel.package.name;
-  stagedManifest.version = channel.package.version;
+  stagedManifest.name = definition.name;
+  stagedManifest.version = definition.version;
   stagedManifest.repository = {
     ...stagedManifest.repository,
-    url: channel.package.repository,
+    url: channel.repository,
   };
-  stagedManifest.dependencies = structuredClone(channel.dependencies);
-  stagedManifest.files = ['dist', 'XELPER-PROVENANCE.json'];
+  stagedManifest.dependencies = structuredClone(definition.dependencies);
+  stagedManifest.files = ['dist', 'LICENSE', 'XELPER-PROVENANCE.json'];
   writeFileSync(join(stage, 'package.json'), `${JSON.stringify(stagedManifest, null, 2)}\n`);
   writeFileSync(
     join(stage, 'XELPER-PROVENANCE.json'),
-    `${JSON.stringify(provenanceFor(channel), null, 2)}\n`,
+    `${JSON.stringify(provenanceFor(channel, packageKey), null, 2)}\n`,
   );
 
   if (readFileSync(sourceManifestPath, 'utf8') !== sourceManifestBytes) {
     fail('Staging mutated the source package manifest.');
   }
   const stagedFiles = listFiles(stage);
-  const required = ['XELPER-PROVENANCE.json', 'dist/index.d.ts', 'dist/index.js', 'package.json'];
+  const required = ['LICENSE', 'XELPER-PROVENANCE.json', 'dist/index.d.ts', 'dist/index.js', 'package.json'];
   for (const path of required) {
     if (!stagedFiles.includes(path)) fail(`Staged package is missing ${path}.`);
   }
   for (const path of stagedFiles) {
     if (required.includes(path)) continue;
-    if (!path.startsWith('dist/') || (!path.endsWith('.js') && !path.endsWith('.d.ts'))) {
+    if (!path.startsWith('dist/')) {
       fail(`Unexpected staged package file: ${path}`);
     }
   }
-  return { manifest: stagedManifest, files: stagedFiles, provenance: provenanceFor(channel) };
+  return { manifest: stagedManifest, files: stagedFiles, provenance: provenanceFor(channel, packageKey) };
 }
 
 function validateInputs(channel) {
@@ -216,11 +251,33 @@ function validateInputs(channel) {
   if (sourceCommit !== channel.source.commit) {
     fail(`${channel.source.tag} resolves to ${sourceCommit}, not reviewed source ${channel.source.commit}.`);
   }
-  for (const commit of channel.backports[0].reviewedCommits) {
+  for (const backport of channel.backports) {
+    const headCommit = gitOutput(['rev-parse', `${backport.headRef}^{commit}`]);
+    if (headCommit !== backport.headCommit) {
+      fail(`${backport.headRef} resolves to ${headCommit}, not reviewed head ${backport.headCommit}.`);
+    }
+    git(['cat-file', '-e', `${backport.mergeBase}^{commit}`]);
+    if (git(['merge-base', '--is-ancestor', backport.mergeBase, backport.headCommit],
+      { allowFailure: true }).status !== 0) {
+      fail(`Recorded merge base is not an ancestor of PR #${backport.upstreamPullRequest}.`);
+    }
+    for (const commit of backport.reviewedCommits) git(['cat-file', '-e', `${commit}^{commit}`]);
+  }
+  for (const adaptation of channel.compatibilityAdaptations) {
+    const { commit, path, lines, sha256: expected } = adaptation.sourceHunk;
     git(['cat-file', '-e', `${commit}^{commit}`]);
+    const source = gitOutput(['show', `${commit}:${path}`]).split('\n');
+    const hunk = `${lines.map((line) => source[line - 1]?.trim() ?? '').join('\n')}\n`;
+    if (sha256Text(hunk) !== expected) {
+      fail(`Compatibility source hunk checksum mismatch: ${commit}:${path}`);
+    }
   }
 
-  for (const patch of [...channel.buildEnvironment.patches, ...channel.backports]) {
+  for (const patch of [
+    ...channel.buildEnvironment.patches,
+    ...channel.backports,
+    ...channel.compatibilityAdaptations,
+  ]) {
     const patchPath = join(channelDirectory, patch.patch);
     if (sha256(patchPath) !== patch.sha256) fail(`Patch checksum mismatch: ${patch.patch}`);
     const patchPaths = gitOutput(['apply', '--unidiff-zero', '--numstat', patchPath])
@@ -231,13 +288,11 @@ function validateInputs(channel) {
     if (JSON.stringify(patchPaths) !== JSON.stringify([...patch.paths].sort())) {
       fail(`The recorded patch touches an unreviewed or unexpected path: ${patch.patch}`);
     }
-  }
-  const backport = channel.backports[0];
-  const reviewedPaths = [...new Set(backport.reviewedCommits.flatMap((commit) => gitOutput([
-    'diff-tree', '--no-commit-id', '--name-only', '-r', commit,
-  ]).split('\n').filter((path) => path.startsWith('packages/pptx-react/'))))].sort();
-  if (JSON.stringify(reviewedPaths) !== JSON.stringify([...backport.paths].sort())) {
-    fail('The reviewed upstream commit path set has changed or is unexpected.');
+    if ('upstreamPullRequest' in patch && patchPaths.some((path) => path.startsWith('.changeset/') ||
+      !['bindings/', 'crates/pptx-', 'packages/pptx/', 'packages/pptx-react/', 'shared/office-session/']
+        .some((prefix) => path.startsWith(prefix)))) {
+      fail(`Patch escapes the approved PPTX source, test, shared, or core path set: ${patch.patch}`);
+    }
   }
 }
 
@@ -267,29 +322,41 @@ function prepareSource(channel) {
     }
   }
 
-  const backport = channel.backports[0];
-  const patchPath = join(channelDirectory, backport.patch);
-  git(['apply', '--unidiff-zero', '--check', `--directory=${sourcePrefix}`, patchPath]);
-  git(['apply', '--unidiff-zero', `--directory=${sourcePrefix}`, patchPath]);
-  for (const [path, expected] of Object.entries(backport.postPatchSha256)) {
-    const actual = sha256(join(sourceDirectory, path));
-    if (actual !== expected) fail(`Post-patch checksum mismatch for ${path}.`);
+  for (const backport of channel.backports) {
+    const patchPath = join(channelDirectory, backport.patch);
+    git(['apply', '--unidiff-zero', '--check', `--directory=${sourcePrefix}`, patchPath]);
+    git(['apply', '--unidiff-zero', `--directory=${sourcePrefix}`, patchPath]);
+    for (const [path, expected] of Object.entries(backport.postPatchSha256)) {
+      const actual = sha256(join(sourceDirectory, path));
+      if (actual !== expected) fail(`Post-patch checksum mismatch for ${path}.`);
+    }
+  }
+  for (const adaptation of channel.compatibilityAdaptations) {
+    const patchPath = join(channelDirectory, adaptation.patch);
+    git(['apply', '--unidiff-zero', '--check', `--directory=${sourcePrefix}`, patchPath]);
+    git(['apply', '--unidiff-zero', `--directory=${sourcePrefix}`, patchPath]);
+    for (const [path, expected] of Object.entries(adaptation.postPatchSha256)) {
+      const actual = sha256(join(sourceDirectory, path));
+      if (actual !== expected) fail(`Compatibility post-patch checksum mismatch for ${path}.`);
+    }
   }
 }
 
-function inspectPack(channel) {
+function inspectPack(channel, packageKey) {
+  const definition = channel.packages[packageKey];
+  const stage = join(stageDirectory, packageKey);
   const dryRun = run('npm', ['pack', '--dry-run', '--json'], {
-    cwd: stageDirectory,
+    cwd: stage,
     capture: true,
   });
   const report = JSON.parse(dryRun.stdout);
   if (!Array.isArray(report) || report.length !== 1) fail('npm pack returned an unexpected report.');
   const packed = report[0];
-  if (packed.name !== channel.package.name || packed.version !== channel.package.version) {
+  if (packed.name !== definition.name || packed.version !== definition.version) {
     fail('npm pack resolved an unexpected package name or version.');
   }
   const files = packed.files.map(({ path }) => path).sort();
-  const stagedFiles = listFiles(stageDirectory);
+  const stagedFiles = listFiles(stage);
   if (JSON.stringify(files) !== JSON.stringify(stagedFiles)) {
     fail(`npm pack file set differs from staged files:\n${files.join('\n')}`);
   }
@@ -298,65 +365,102 @@ function inspectPack(channel) {
 
 function buildPackage(channel) {
   const bun = process.execPath;
-  console.log('[1/8] Installing the official tag lockfile');
+  console.log('[1/10] Installing the official tag lockfile');
   run(bun, ['install', '--frozen-lockfile'], { cwd: sourceDirectory });
   const securedDependency = readJson(join(sourceDirectory, 'node_modules', 'systeminformation', 'package.json'));
   if (securedDependency.version !== '5.33.16' || securedDependency.license !== 'MIT') {
     fail('The generated build workspace did not resolve systeminformation@5.33.16 (MIT).');
   }
-  console.log('[2/8] Building the tagged PPTX Wasm prerequisite');
+  console.log('[2/10] Building the tagged PPTX Wasm prerequisite');
   run(bun, ['run', 'build:pptx-wasm'], { cwd: sourceDirectory });
-  console.log('[3/8] Running the 0.5.1 focus regression');
-  run(bun, [
-    'test',
-    'packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx',
-    '--test-name-pattern',
-    'strip_arrow_keys_focus_activate_and_preserve_reorder',
+
+  console.log('[3/10] Running focused core and React regressions');
+  const test = (paths, pattern) => run(bun, [
+    'test', ...paths, ...(pattern ? ['--test-name-pattern', pattern] : []),
   ], {
     cwd: sourceDirectory,
     env: { ...process.env, BUN_CONFIG_PRELOAD: '' },
   });
-  console.log('[4/8] Typechecking pptx-react');
+  test(['packages/pptx-react/src/worker/PeerlessPptxSurface.test.tsx'],
+    'strip_arrow_keys_focus_activate_and_preserve_reorder');
+  test(['packages/pptx-react/src/worker/peerlessInsertionOutline.test.tsx'],
+    'resize released|pending released resize|new shape gesture|grouped child text');
+  test(['shared/office-session/commands/session.test.ts'],
+    'cancels a command waiting for its predecessor');
+  test(['packages/pptx-react/src/usePptxPinchZoom.test.tsx']);
+  test(['packages/pptx-react/src/worker/PeerlessShapeResizePreview.test.tsx']);
+  test(['packages/pptx/src/session/commandS6.test.ts'],
+    'relative resize|shape rectangle previews');
+  test(['packages/pptx-react/src/worker/peerlessS6.test.tsx'],
+    'text editing keeps resize handles|text_resize_preview|released text-edit resize');
+  run('cargo', [
+    'test', '-p', 'pptx-wasm',
+    'shape_rect_preview_reflows_text_without_changing_session_state',
+  ], { cwd: sourceDirectory });
+
+  console.log('[4/10] Typechecking core and React');
+  run(bun, ['run', '--filter', '@betteroffice/pptx', 'typecheck'], { cwd: sourceDirectory });
   run(bun, ['run', '--filter', '@betteroffice/pptx-react', 'typecheck'], { cwd: sourceDirectory });
-  console.log('[5/8] Building pptx-react');
+
+  console.log('[5/10] Building core and React');
+  run(bun, ['run', '--filter', '@betteroffice/pptx', 'build'], { cwd: sourceDirectory });
   run(bun, ['run', '--filter', '@betteroffice/pptx-react', 'build'], { cwd: sourceDirectory });
 
-  console.log('[6/8] Auditing the complete resolved dependency set');
-  run(bun, ['audit'], { cwd: sourceDirectory, allowFailure: true });
+  console.log('[6/10] Auditing the complete resolved dependency set');
+  const audit = run(bun, ['audit'], { cwd: sourceDirectory, allowFailure: true, capture: true });
+  process.stdout.write(audit.stdout);
+  process.stderr.write(audit.stderr);
+  if (/severity\\s*[:=]\\s*[\"']?(unknown|unclassified)/i.test(`${audit.stdout}\n${audit.stderr}`)) {
+    fail('The complete dependency audit contains an unclassified finding.');
+  }
   run(bun, ['audit', '--audit-level=high'], { cwd: sourceDirectory });
 
-  console.log('[7/8] Staging and inspecting npm pack output');
-  stagePackage({ channel });
-  inspectPack(channel);
+  console.log('[7/10] Staging both immutable packages');
+  rmSync(stageDirectory, { recursive: true, force: true });
+  for (const packageKey of ['core', 'react']) {
+    stagePackage({ channel, packageKey });
+    inspectPack(channel, packageKey);
+  }
+
+  console.log('[8/10] Creating both npm tarballs');
   rmSync(artifactsDirectory, { recursive: true, force: true });
   mkdirSync(artifactsDirectory, { recursive: true });
-  const pack = run('npm', ['pack', '--json', '--pack-destination', artifactsDirectory], {
-    cwd: stageDirectory,
-    capture: true,
-  });
-  const report = JSON.parse(pack.stdout);
-  if (!Array.isArray(report) || report.length !== 1) fail('npm pack did not create exactly one tarball.');
-  const tarball = join(artifactsDirectory, report[0].filename);
-  const artifactProvenance = {
-    ...provenanceFor(channel),
-    tarball: {
+  const tarballs = {};
+  for (const packageKey of ['core', 'react']) {
+    const pack = run('npm', ['pack', '--json', '--pack-destination', artifactsDirectory], {
+      cwd: join(stageDirectory, packageKey),
+      capture: true,
+    });
+    const report = JSON.parse(pack.stdout);
+    if (!Array.isArray(report) || report.length !== 1) {
+      fail(`npm pack did not create exactly one ${packageKey} tarball.`);
+    }
+    const tarball = join(artifactsDirectory, report[0].filename);
+    tarballs[packageKey] = {
       file: relative(channelDirectory, tarball),
       sha256: sha256(tarball),
       size: report[0].size,
       unpackedSize: report[0].unpackedSize,
       integrity: report[0].integrity,
-    },
-  };
+    };
+  }
+
+  console.log('[9/10] Recording release-set provenance');
   writeFileSync(
     join(artifactsDirectory, 'provenance.json'),
-    `${JSON.stringify(artifactProvenance, null, 2)}\n`,
+    `${JSON.stringify({
+      schemaVersion: 2,
+      releaseTag: channel.releaseTag,
+      source: channel.source,
+      tarballs,
+    }, null, 2)}\n`,
   );
-  console.log('[8/8] Created the reviewed prerelease tarball');
-  return tarball;
+  console.log('[10/10] Created the reviewed dual-package release set');
+  return Object.values(tarballs).map(({ file }) => join(channelDirectory, file));
 }
 
 function validateTag(channel, tag) {
-  const expected = `${channel.package.name}@${channel.package.version}`;
+  const expected = channel.releaseTag;
   if (tag !== expected) fail(`Release tag must be exactly ${expected}; received ${tag}.`);
   console.log(`Validated release tag ${tag}.`);
 }
@@ -370,16 +474,16 @@ function main() {
   if (process.argv.length !== 2) fail('Unexpected arguments. Run without arguments or use --validate-tag <tag>.');
 
   const statusBefore = gitOutput(['status', '--porcelain=v1', '--untracked-files=all']);
-  console.log('[0/8] Validating pinned source and backport inputs');
+  console.log('[0/10] Validating pinned source and backport inputs');
   validateInputs(channel);
   rmSync(artifactsDirectory, { recursive: true, force: true });
   prepareSource(channel);
-  const tarball = buildPackage(channel);
+  const tarballs = buildPackage(channel);
   const statusAfter = gitOutput(['status', '--porcelain=v1', '--untracked-files=all']);
   if (statusAfter !== statusBefore) {
     fail('Packaging mutated the source checkout; inspect git status before retrying.');
   }
-  console.log(`\nReady: ${relative(root, tarball)}`);
+  console.log(`\nReady:\n${tarballs.map((tarball) => relative(root, tarball)).join('\n')}`);
 }
 
 if (resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
